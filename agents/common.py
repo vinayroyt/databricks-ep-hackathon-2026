@@ -1,16 +1,14 @@
 import json
 import warnings
-from databricks.sdk import WorkspaceClient
+from lakebase import get_workspace_client
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 ENDPOINT_NAME = "dbrxhack2026"
-PROFILE = "dbrx-hackathon-2026"
 
 
 def get_client():
-    w = WorkspaceClient(profile=PROFILE)
-    return w.serving_endpoints.get_open_ai_client()
+    return get_workspace_client().serving_endpoints.get_open_ai_client()
 
 
 def run_agent(client, system_prompt, tools_spec, tool_impls, user_message, max_turns=5, verbose=True):

@@ -2,8 +2,8 @@
 reasoning over verified capability data, trust scores, and cited evidence
 snippets - the part Genie's NL-to-SQL can't do on free-text evidence.
 """
-from agents import mock_data
-from agents.common import get_client, run_agent
+import mock_data
+from common import get_client, run_agent
 
 
 def list_regions():

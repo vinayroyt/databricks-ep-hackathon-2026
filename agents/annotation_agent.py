@@ -7,9 +7,9 @@ project - the same store the Databricks App backend reads/writes for the
 persistence feature.
 """
 import json
-from agents import mock_data
-from agents.lakebase import get_connection
-from agents.common import get_client, run_agent
+import mock_data
+from lakebase import get_connection
+from common import get_client, run_agent
 
 
 def list_regions():

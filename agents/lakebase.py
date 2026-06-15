@@ -3,10 +3,11 @@
 Reused by the agents here and intended to be reused by the Databricks App
 backend - same project/branch/endpoint, same credential pattern.
 """
-import json
+import os
 import re
 import subprocess
 import psycopg
+from databricks.sdk import WorkspaceClient
 
 PROFILE = "dbrx-hackathon-2026"
 PROJECT_ID = "dbrx-hackathon-2026"
@@ -16,11 +17,11 @@ DBNAME = "databricks_postgres"
 PG_USER = "vinayroyt@gmail.com"
 
 
-def _generate_token() -> str:
-    out = subprocess.check_output(
-        ["databricks", "postgres", "generate-database-credential", ENDPOINT, "--profile", PROFILE, "-o", "json"]
-    )
-    return json.loads(out)["token"]
+def get_workspace_client() -> WorkspaceClient:
+    """Local dev uses the CLI profile; inside Model Serving, fall back to default env auth."""
+    if os.path.exists(os.path.expanduser("~/.databrickscfg")):
+        return WorkspaceClient(profile=PROFILE)
+    return WorkspaceClient()
 
 
 def _resolve_hostaddr(host: str):
@@ -35,7 +36,9 @@ def _resolve_hostaddr(host: str):
 
 def get_connection():
     """Open a fresh Postgres connection. Tokens expire after ~1hr, so generate per-connection."""
-    kwargs = dict(host=HOST, dbname=DBNAME, user=PG_USER, password=_generate_token(), sslmode="require")
+    w = get_workspace_client()
+    token = w.postgres.generate_database_credential(ENDPOINT).token
+    kwargs = dict(host=HOST, dbname=DBNAME, user=PG_USER, password=token, sslmode="require")
     hostaddr = _resolve_hostaddr(HOST)
     if hostaddr:
         kwargs["hostaddr"] = hostaddr
