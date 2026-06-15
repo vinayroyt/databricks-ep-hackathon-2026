@@ -14,7 +14,6 @@ PROJECT_ID = "dbrx-hackathon-2026"
 ENDPOINT = f"projects/{PROJECT_ID}/branches/production/endpoints/primary"
 HOST = "ep-long-heart-d8anwpz5.database.us-east-2.cloud.databricks.com"
 DBNAME = "databricks_postgres"
-PG_USER = "vinayroyt@gmail.com"
 
 
 def get_workspace_client() -> WorkspaceClient:
@@ -35,11 +34,20 @@ def _resolve_hostaddr(host: str):
 
 
 def get_connection():
-    """Open a fresh Postgres connection. Tokens expire after ~1hr, so generate per-connection."""
+    """Open a fresh Postgres connection. Tokens expire after ~1hr, so generate per-connection.
+
+    The Postgres role name must match the connecting principal's Databricks
+    identity: a user's email locally, or a service principal's application ID
+    when running inside Model Serving.
+    """
     w = get_workspace_client()
     token = w.postgres.generate_database_credential(ENDPOINT).token
-    kwargs = dict(host=HOST, dbname=DBNAME, user=PG_USER, password=token, sslmode="require")
+    pg_user = w.current_user.me().user_name
+    kwargs = dict(host=HOST, dbname=DBNAME, user=pg_user, password=token, sslmode="require")
     hostaddr = _resolve_hostaddr(HOST)
     if hostaddr:
         kwargs["hostaddr"] = hostaddr
-    return psycopg.connect(**kwargs)
+    try:
+        return psycopg.connect(**kwargs)
+    except psycopg.OperationalError as e:
+        raise psycopg.OperationalError(f"(connecting as Postgres role '{pg_user}') {e}") from e
