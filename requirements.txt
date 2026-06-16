@@ -1,0 +1,5 @@
+databricks-sdk
+pandas
+psycopg[binary]
+pydeck
+streamlit

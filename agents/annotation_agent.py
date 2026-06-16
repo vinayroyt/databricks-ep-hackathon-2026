@@ -12,6 +12,52 @@ from lakebase import get_connection
 from common import get_client, run_agent
 
 
+FLAG_RECLASS_PRIORITY = {"data_wrong", "incorrect_capability", "missing_capability"}
+
+
+def ensure_annotation_table():
+    """Create/upgrade the shared planner annotation table used by agents and UI."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS region_annotations (
+                    id BIGSERIAL PRIMARY KEY,
+                    region_id TEXT NOT NULL,
+                    facility_id TEXT,
+                    author TEXT,
+                    note TEXT NOT NULL,
+                    is_test BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+            cur.execute("ALTER TABLE region_annotations ADD COLUMN IF NOT EXISTS human_flag TEXT")
+            cur.execute(
+                """
+                ALTER TABLE region_annotations
+                ADD COLUMN IF NOT EXISTS reclassification_priority BOOLEAN NOT NULL DEFAULT FALSE
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_region_annotations_region ON region_annotations(region_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_region_annotations_facility ON region_annotations(facility_id)")
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_region_annotations_reclass_priority
+                ON region_annotations(reclassification_priority, created_at DESC)
+                """
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _resolve_region_id(region_id: str):
+    region = mock_data.get_region(region_id)
+    return region["region_id"] if region else region_id
+
+
 def list_regions():
     return [{"region_id": r["region_id"], "region_name": r["region_name"]} for r in mock_data.get_regions()]
 
@@ -20,22 +66,32 @@ def list_facilities(region_id: str):
     return [{"facility_id": f["facility_id"], "name": f["name"]} for f in mock_data.get_facilities(region_id)]
 
 
-def save_annotation(note: str, region_id: str, facility_id: str = None, author: str = None, is_test: bool = False):
-    region = mock_data.get_region(region_id)
-    if region is None:
-        return {"error": f"unknown region_id {region_id}"}
-    region_id = region["region_id"]
+def save_annotation(
+    note: str,
+    region_id: str,
+    facility_id: str = None,
+    author: str = None,
+    is_test: bool = False,
+    human_flag: str = None,
+    reclassification_priority: bool = None,
+):
+    region_id = _resolve_region_id(region_id)
+    if reclassification_priority is None:
+        reclassification_priority = human_flag in FLAG_RECLASS_PRIORITY
 
+    ensure_annotation_table()
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO region_annotations (region_id, facility_id, author, note, is_test)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO region_annotations (
+                    region_id, facility_id, author, note, is_test, human_flag, reclassification_priority
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id, created_at
                 """,
-                (region_id, facility_id, author, note, is_test),
+                (region_id, facility_id, author, note, is_test, human_flag, reclassification_priority),
             )
             new_id, created_at = cur.fetchone()
         conn.commit()
@@ -48,6 +104,8 @@ def save_annotation(note: str, region_id: str, facility_id: str = None, author: 
         "region_id": region_id,
         "facility_id": facility_id,
         "note": note,
+        "human_flag": human_flag,
+        "reclassification_priority": reclassification_priority,
         "created_at": created_at.isoformat(),
     }
 
@@ -57,11 +115,8 @@ def get_annotations(region_id: str = None, facility_id: str = None, include_test
     params = []
 
     if region_id:
-        region = mock_data.get_region(region_id)
-        if region is None:
-            return {"error": f"unknown region_id {region_id}"}
         conditions.append("region_id = %s")
-        params.append(region["region_id"])
+        params.append(_resolve_region_id(region_id))
 
     if facility_id:
         conditions.append("facility_id = %s")
@@ -72,12 +127,14 @@ def get_annotations(region_id: str = None, facility_id: str = None, include_test
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
+    ensure_annotation_table()
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT id, region_id, facility_id, author, note, created_at
+                SELECT id, region_id, facility_id, author, note, human_flag,
+                       reclassification_priority, created_at
                 FROM region_annotations
                 {where_clause}
                 ORDER BY created_at DESC
@@ -95,7 +152,9 @@ def get_annotations(region_id: str = None, facility_id: str = None, include_test
             "facility_id": r[2],
             "author": r[3],
             "note": r[4],
-            "created_at": r[5].isoformat(),
+            "human_flag": r[5],
+            "reclassification_priority": r[6],
+            "created_at": r[7].isoformat(),
         }
         for r in rows
     ]
@@ -139,6 +198,15 @@ TOOLS_SPEC = [
                     "note": {"type": "string", "description": "The note text to save"},
                     "author": {"type": "string", "description": "Optional name of the planner saving the note"},
                     "is_test": {"type": "boolean", "description": "Mark true for test/dev annotations so they're excluded from demo views. Defaults to false."},
+                    "human_flag": {
+                        "type": "string",
+                        "enum": ["looks_good", "data_wrong", "incorrect_capability", "missing_capability"],
+                        "description": "Optional planner/field-agent flag attached to this note.",
+                    },
+                    "reclassification_priority": {
+                        "type": "boolean",
+                        "description": "Whether this note should push the facility toward the reclassification queue.",
+                    },
                 },
                 "required": ["region_id", "note"],
             },
