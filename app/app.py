@@ -150,6 +150,41 @@ st.markdown(
       background: #fbfcfe;
       color: #253247;
     }
+    .district-summary {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .district-summary-main {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr);
+      gap: 10px;
+      align-items: stretch;
+    }
+    .summary-primary, .summary-review {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #f9fbfd;
+    }
+    .summary-number { font-size: 26px; font-weight: 780; color: var(--ink); line-height: 1.05; }
+    .summary-title { color: var(--muted); font-size: 12px; font-weight: 720; text-transform: uppercase; letter-spacing: .04em; margin-top: 3px; }
+    .summary-sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .summary-review.good { border-color: #acd9c2; background: #f2fbf6; }
+    .summary-review.warn { border-color: #ead19c; background: #fff9eb; }
+    .summary-review.bad { border-color: #efb0ba; background: #fff6f7; }
+    .summary-chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .summary-chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 9px;
+      color: #344256;
+      background: #ffffff;
+      font-size: 12px;
+      font-weight: 650;
+    }
     .priority-card {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -741,14 +776,25 @@ def render_map(scores, selected_district):
     map_df["demand_score"] = map_df["demand_score"].fillna(0.5)
     map_df["radius"] = 18000 + map_df["total_facilities"].fillna(1).astype(float).clip(1, 100) * 900
     map_df["line_color"] = map_df["district"].apply(lambda d: [12, 28, 54, 255] if d == selected_district else [255, 255, 255, 120])
+    selected_row = map_df[map_df["district"] == selected_district]
+    if len(map_df) > 40:
+        center_lat, center_lon, zoom = 22.97, 78.66, 4.25
+    elif not selected_row.empty:
+        center_lat = float(selected_row.iloc[0]["latitude"])
+        center_lon = float(selected_row.iloc[0]["longitude"])
+        zoom = 5.7
+    else:
+        center_lat = float(map_df["latitude"].mean())
+        center_lon = float(map_df["longitude"].mean())
+        zoom = 5.1
     view = pdk.ViewState(
-        latitude=float(map_df["latitude"].mean()),
-        longitude=float(map_df["longitude"].mean()),
-        zoom=4.7 if len(map_df) > 20 else 6,
+        latitude=center_lat,
+        longitude=center_lon,
+        zoom=zoom,
         pitch=0,
     )
     deck = pdk.Deck(
-        map_style=None,
+        map_style="light",
         initial_view_state=view,
         layers=[
             pdk.Layer(
@@ -905,6 +951,13 @@ def focus_district(district):
     st.session_state.show_facilities = False
 
 
+def reset_review_page_if_needed(district, capability):
+    key = f"{district}|{capability}"
+    if st.session_state.get("review_page_key") != key:
+        st.session_state.review_page_key = key
+        st.session_state.review_limit = 5
+
+
 def render_priority_districts(scores):
     top = scores.head(3).to_dict("records")
     for idx, item in enumerate(top, start=1):
@@ -921,6 +974,44 @@ def render_priority_districts(scores):
         if st.button("Review district", key=f"district_{item.get('district')}"):
             focus_district(item.get("district"))
             st.rerun()
+
+
+def render_district_summary(selected, capability):
+    total = int(selected.get("total_facilities") or 0)
+    claimed = int(selected.get("claimed_facilities") or 0)
+    verified = int(selected.get("verified_facilities") or 0)
+    review = int(selected.get("low_trust_facilities") or 0)
+    need = float(selected.get("demand_score") or 0.5)
+    gap = float(selected.get("gap_score") or 0)
+    capability_label = capability.replace("_", " ").title()
+    review_tone = "good" if review == 0 else "warn" if review <= 2 else "bad"
+    review_title = "No Review Items" if review == 0 else f"{review} Need Review"
+    review_sub = "Selected-care claims look clean." if review == 0 else "Open a review item to inspect evidence."
+    st.markdown(
+        f"""
+        <div class='district-summary'>
+          <div class='district-summary-main'>
+            <div class='summary-primary'>
+              <div class='summary-number'>{verified} of {claimed}</div>
+              <div class='summary-title'>{capability_label} Claims Verified</div>
+              <div class='summary-sub'>{total} total facilities in this district</div>
+            </div>
+            <div class='summary-review {review_tone}'>
+              <div class='summary-number'>{review}</div>
+              <div class='summary-title'>{review_title}</div>
+              <div class='summary-sub'>{review_sub}</div>
+            </div>
+          </div>
+          <div class='summary-chip-row'>
+            <span class='summary-chip'>Need {need:.2f}</span>
+            <span class='summary-chip'>Gap {gap:.2f}</span>
+            <span class='summary-chip'>{claimed} claimed</span>
+            <span class='summary-chip'>{total} facilities</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_annotation_form(region_id, facility_id=None, key_suffix="region", allow_recheck=False, capability=None, recheck_key=None):
@@ -1196,6 +1287,7 @@ with tab_map:
         if clicked_district and clicked_district != selected_district:
             focus_district(clicked_district)
             st.rerun()
+        st.caption("India district bubbles are shaded by selected-care gap score.")
         if _supports_pydeck_selection():
             st.caption("Click a district on the map or use the district picker.")
         else:
@@ -1211,27 +1303,23 @@ with tab_map:
     detail_cols = st.columns([1.15, 0.85])
     with detail_cols[0]:
         st.subheader(selected_district)
-        d1, d2, d3, d4, d5 = st.columns(5)
-        d1.metric("Total facilities", int(selected.get("total_facilities") or 0))
-        d2.metric("Claims selected care", int(selected.get("claimed_facilities") or 0))
-        d3.metric("Verified", f"{int(selected.get('verified_facilities') or 0)} of {int(selected.get('claimed_facilities') or 0)}")
-        d4.metric("Needs review", int(selected.get("low_trust_facilities") or 0))
-        d5.metric("Need", f"{float(selected.get('demand_score') or 0.5):.2f}")
+        render_district_summary(selected, selected_capability)
         with st.expander("Planner notes", expanded=False):
             render_notes_lazy(selected_district, key_suffix=f"district_{selected_district}")
             render_annotation_form(selected_district, key_suffix=f"district_{selected_district}")
 
     with detail_cols[1]:
         st.subheader("Needs Attention")
-        queue_limit = 5
+        reset_review_page_if_needed(selected_district, selected_capability)
+        expected_review = int(selected.get("low_trust_facilities") or 0)
+        queue_limit = min(max(5, int(st.session_state.get("review_limit", 5))), max(5, expected_review))
         queue = load_review_queue(selected_capability, selected_state, selected_district, limit=queue_limit)
         if not queue:
             st.caption("No facilities need attention in this district for the selected capability.")
         else:
-            expected_review = int(selected.get("low_trust_facilities") or 0)
             more_count = max(0, expected_review - len(queue))
             more_text = f" + {more_count} more" if more_count else ""
-            st.caption(f"{selected_district}: top {len(queue)} selected-care review items{more_text}.")
+            st.caption(f"{selected_district}: showing {len(queue)} of {expected_review} selected-care review items{more_text}.")
         for idx, item in enumerate(queue, start=1):
             row_cols = st.columns([0.78, 0.22], vertical_alignment="center")
             with row_cols[0]:
@@ -1248,6 +1336,14 @@ with tab_map:
                     st.rerun()
             if idx < len(queue):
                 st.divider()
+        if expected_review > 5:
+            more_cols = st.columns(2)
+            if len(queue) < expected_review and more_cols[0].button("Show more", key=f"show_more_{selected_district}_{selected_capability}"):
+                st.session_state.review_limit = min(expected_review, queue_limit + 5)
+                st.rerun()
+            if queue_limit > 5 and more_cols[1].button("Show fewer", key=f"show_fewer_{selected_district}_{selected_capability}"):
+                st.session_state.review_limit = 5
+                st.rerun()
 
     fe_cols = st.columns([0.75, 0.25], vertical_alignment="center")
     fe_cols[0].subheader("Facility Evidence")
