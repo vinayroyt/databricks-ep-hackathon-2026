@@ -6,7 +6,6 @@ from datetime import datetime
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
-import streamlit.components.v1 as components
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENTS = os.path.join(ROOT, "agents")
@@ -781,60 +780,64 @@ def render_score_table(scores):
     )
 
 
-ARCHITECTURE_MERMAID = """
-flowchart TB
-  U["Planner / Field Agent<br/>Browser"] --> APP["Databricks App<br/>Streamlit: VeriCare Map"]
-
-  subgraph DBX["Databricks Workspace"]
-    APP --> SQL["SQL Warehouse"]
-    JOB["Notebook / Lakeflow Job<br/>clean, extract, score"] --> DELTA["Delta Tables<br/>facility_refined<br/>facility_confidence<br/>facility_app"]
-    SQL --> DELTA
-    AGENTS["Agents<br/>annotation + reclassification"] --> SQL
-  end
-
-  subgraph DATA["Source Data"]
-    RAW["Raw facility records"]
-    PIN["Pincode directory"]
-    NFHS["NFHS demand indicators"]
-  end
-
-  subgraph LB["Lakebase Postgres"]
-    UI["UI cache tables<br/>cg_facilities<br/>cg_district_scores"]
-    NOTES["Planner notes<br/>public.region_annotations"]
-  end
-
-  RAW --> JOB
-  PIN --> JOB
-  NFHS --> JOB
-  DELTA --> SYNC["sync_lakebase_ui.py<br/>batch sync"]
-  SYNC --> UI
-  APP --> UI
-  APP --> NOTES
-  APP --> AGENTS
-  AGENTS --> NOTES
-  AGENTS --> DELTA
-  AGENTS --> SYNC
+ARCHITECTURE_ASCII = r"""
+                          +-----------------------------+
+                          | Planner / Field Agent       |
+                          | Browser                     |
+                          +--------------+--------------+
+                                         |
+                                         v
+                          +-----------------------------+
+                          | Databricks App              |
+                          | Streamlit: VeriCare Map     |
+                          +------+----------------+-----+
+                                 |                |
+                    reads cache  |                | saves notes / recheck
+                                 v                v
+        +------------------------------+     +-----------------------------+
+        | Lakebase Postgres            |     | Agents                      |
+        | - cg_facilities              |     | - annotation_agent          |
+        | - cg_districts               |     | - reclassification_agent    |
+        | - cg_district_scores         |     +-------------+---------------+
+        | - cg_demand_reference        |                   |
+        | - public.region_annotations  |<------------------+
+        +---------------+--------------+       writes planner notes
+                        ^
+                        | batch sync
+                        |
+        +---------------+--------------+
+        | sync_lakebase_ui.py          |
+        | pages facility_app rows      |
+        +---------------+--------------+
+                        ^
+                        |
+        +---------------+--------------+
+        | Databricks SQL Warehouse     |
+        +---------------+--------------+
+                        ^
+                        |
+        +---------------+--------------+
+        | Delta Tables                 |
+        | - facility_refined           |
+        | - facility_confidence        |
+        | - district_gaps              |
+        | - facility_app               |
+        +---------------+--------------+
+                        ^
+                        |
+        +---------------+--------------+
+        | Notebook / Lakeflow Job      |
+        | clean -> extract -> score    |
+        +---------------+--------------+
+                        ^
+                        |
+        +---------------+--------------+
+        | Source Data                  |
+        | - raw facility records       |
+        | - pincode directory          |
+        | - NFHS demand indicators     |
+        +------------------------------+
 """
-
-
-def render_mermaid_chart(source, height=760):
-    escaped = json.dumps(source)
-    components.html(
-        f"""
-        <div class="mermaid" style="font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif;">
-        </div>
-        <script type="module">
-          import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-          mermaid.initialize({{ startOnLoad: false, theme: 'base', securityLevel: 'loose' }});
-          const source = {escaped};
-          const container = document.querySelector('.mermaid');
-          const {{ svg }} = await mermaid.render('vericareArchitecture', source);
-          container.innerHTML = svg;
-        </script>
-        """,
-        height=height,
-        scrolling=True,
-    )
 
 
 def short_reason(item):
@@ -1285,7 +1288,7 @@ with tab_fixes:
 with tab_architecture:
     st.subheader("Deployment Architecture")
     st.write("A Databricks App serves the planner UI, Delta tables hold the analytical source of truth, and Lakebase stores the fast UI cache plus planner notes.")
-    render_mermaid_chart(ARCHITECTURE_MERMAID, height=620)
+    st.code(ARCHITECTURE_ASCII.strip(), language="text")
 
     cols = st.columns(4)
     cols[0].metric("Frontend", "Databricks App")
@@ -1300,8 +1303,8 @@ with tab_architecture:
         "reclassification agent when a planner asks to recheck a facility."
     )
 
-    with st.expander("Mermaid source", expanded=False):
-        st.code(ARCHITECTURE_MERMAID.strip(), language="mermaid")
+    with st.expander("Copyable architecture diagram", expanded=False):
+        st.code(ARCHITECTURE_ASCII.strip(), language="text")
 
 updated_at = overview.get("updated_at")
 updated = updated_at.isoformat() if hasattr(updated_at, "isoformat") else (updated_at or "not synced")
