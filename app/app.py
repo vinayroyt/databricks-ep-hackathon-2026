@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import inspect
 from datetime import datetime
 
 import pandas as pd
@@ -697,6 +698,11 @@ def inline_badges(items, tone="neutral"):
     st.markdown(html, unsafe_allow_html=True)
 
 
+def _supports_pydeck_selection():
+    params = inspect.signature(st.pydeck_chart).parameters
+    return {"key", "on_select", "selection_mode"}.issubset(params)
+
+
 def render_map(scores, selected_district):
     map_df = scores.dropna(subset=["latitude", "longitude"]).copy()
     if map_df.empty:
@@ -713,30 +719,35 @@ def render_map(scores, selected_district):
         zoom=4.7 if len(map_df) > 20 else 6,
         pitch=0,
     )
+    deck = pdk.Deck(
+        map_style=None,
+        initial_view_state=view,
+        layers=[
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=map_df,
+                id="district-points",
+                get_position="[longitude, latitude]",
+                get_fill_color="color",
+                get_line_color="line_color",
+                get_line_width=1800,
+                stroked=True,
+                filled=True,
+                get_radius="radius",
+                pickable=True,
+            )
+        ],
+        tooltip={
+            "html": "<b>{district}</b><br/>Gap {gap_score}<br/>Need {demand_score}<br/>Claims {claimed_facilities} of {total_facilities} facilities<br/>Verified {verified_facilities} of claimed<br/>{why}",
+            "style": {"backgroundColor": "#18212f", "color": "white"},
+        },
+    )
+    if not _supports_pydeck_selection():
+        st.pydeck_chart(deck, use_container_width=True)
+        return None
+
     event = st.pydeck_chart(
-        pdk.Deck(
-            map_style=None,
-            initial_view_state=view,
-            layers=[
-                pdk.Layer(
-                    "ScatterplotLayer",
-                    data=map_df,
-                    id="district-points",
-                    get_position="[longitude, latitude]",
-                    get_fill_color="color",
-                    get_line_color="line_color",
-                    get_line_width=1800,
-                    stroked=True,
-                    filled=True,
-                    get_radius="radius",
-                    pickable=True,
-                )
-            ],
-            tooltip={
-                "html": "<b>{district}</b><br/>Gap {gap_score}<br/>Need {demand_score}<br/>Claims {claimed_facilities} of {total_facilities} facilities<br/>Verified {verified_facilities} of claimed<br/>{why}",
-                "style": {"backgroundColor": "#18212f", "color": "white"},
-            },
-        ),
+        deck,
         use_container_width=True,
         key="district_gap_map",
         on_select="rerun",
@@ -1142,7 +1153,10 @@ with tab_map:
         if clicked_district and clicked_district != selected_district:
             focus_district(clicked_district)
             st.rerun()
-        st.caption("Click a district on the map or use the district picker.")
+        if _supports_pydeck_selection():
+            st.caption("Click a district on the map or use the district picker.")
+        else:
+            st.caption("Use the district picker or Review district buttons to change focus.")
     with table_col:
         st.subheader("Start Here")
         render_priority_districts(scores)
