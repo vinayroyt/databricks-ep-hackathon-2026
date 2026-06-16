@@ -271,9 +271,24 @@ def load_scores(capability, state):
         params = {"capability": capability}
         if state != "All states":
             params["state"] = state
-        return pd.DataFrame(_query(
+        df = pd.DataFrame(_query(
             f"""
-            SELECT s.*, d.state, d.latitude, d.longitude, d.population
+            SELECT
+                s.district,
+                s.capability,
+                s.total_facilities,
+                s.claimed_facilities,
+                s.verified_facilities,
+                s.low_trust_facilities,
+                s.avg_confidence,
+                coalesce(s.demand_score, d.demand_score, 0.5) AS demand_score,
+                s.gap_score,
+                s.why,
+                s.updated_at,
+                d.state,
+                d.latitude,
+                d.longitude,
+                d.population
             FROM {lakebase_ui.UI_SCORES} s
             LEFT JOIN {lakebase_ui.UI_DISTRICTS} d USING (district)
             WHERE s.capability = %(capability)s
@@ -282,19 +297,23 @@ def load_scores(capability, state):
             """,
             params,
         ))
+        if not df.empty:
+            df["demand_score"] = df["demand_score"].fillna(0.5)
+        return df
     except Exception:
         scores = _mock_scores(capability)
         return scores if state == "All states" else scores[scores["state"] == state]
 
 
 @st.cache_data(ttl=120)
-def load_facilities(district, capability=None, low_trust_only=False, limit=40):
+def load_facilities(district, capability=None, low_trust_only=False, limit=None):
     try:
         conditions = ["district = %(district)s"]
-        params = {"district": district, "limit": limit}
+        params = {"district": district}
+        capability_order = "1"
         if capability:
-            conditions.append("(capabilities ? %(capability)s OR claimed_capabilities ? %(capability)s)")
             params["capability"] = capability
+            capability_order = "CASE WHEN (capabilities ? %(capability)s OR claimed_capabilities ? %(capability)s) THEN 0 ELSE 1 END"
         if low_trust_only:
             conditions.append(
                 """
@@ -305,16 +324,21 @@ def load_facilities(district, capability=None, low_trust_only=False, limit=40):
                 )
                 """
             )
+        limit_clause = ""
+        if limit:
+            params["limit"] = limit
+            limit_clause = "LIMIT %(limit)s"
         rows = _query(
             f"""
             SELECT *
             FROM {lakebase_ui.UI_FACILITIES}
             WHERE {" AND ".join(conditions)}
             ORDER BY
+                {capability_order},
                 CASE WHEN coalesce(trust_bucket, '') IN ('Contradicted', 'Unverified') THEN 0 ELSE 1 END,
                 trust_score NULLS FIRST,
                 name
-            LIMIT %(limit)s
+            {limit_clause}
             """,
             params,
         )
@@ -344,10 +368,14 @@ def load_facilities(district, capability=None, low_trust_only=False, limit=40):
                 "trust_flags": f["trust_flags"],
                 "raw_text": f["raw_text"],
             })
-        if capability:
-            rows = [r for r in rows if capability.lower() in [c.lower() for c in r["claimed_capabilities"]]]
         if low_trust_only:
             rows = [r for r in rows if r["trust_bucket"] != "Verified" or r["trust_flags"]]
+        if capability:
+            cap = capability.lower()
+            rows = sorted(
+                rows,
+                key=lambda r: cap not in [c.lower() for c in (r.get("claimed_capabilities") or []) + (r.get("capabilities") or [])],
+            )
         return rows
 
 
@@ -459,7 +487,7 @@ def load_demo_insights(capability, state):
             insights.append(
                 f"{row['district']} is the first place to discuss for {capability.replace('_', ' ')}: "
                 f"gap {float(row['gap_score']):.2f}, need {float(row.get('demand_score') or 0.5):.2f}, "
-                f"{int(row['verified_facilities'])} verified of {int(row['total_facilities'])} facilities."
+                f"{int(row['verified_facilities'])} verified facilities out of {int(row['total_facilities'])} total facilities."
             )
         insights.append(
             f"{int(counts['needs_review'])} of {int(counts['facilities'])} synced facilities need review because claims are weak, contradictory, or low confidence."
@@ -589,6 +617,7 @@ def render_map(scores, selected_district):
         return
 
     map_df["color"] = map_df["gap_score"].apply(score_color)
+    map_df["demand_score"] = map_df["demand_score"].fillna(0.5)
     map_df["radius"] = 18000 + map_df["total_facilities"].fillna(1).astype(float).clip(1, 100) * 900
     map_df["line_color"] = map_df["district"].apply(lambda d: [12, 28, 54, 255] if d == selected_district else [255, 255, 255, 120])
     view = pdk.ViewState(
@@ -617,7 +646,7 @@ def render_map(scores, selected_district):
                 )
             ],
             tooltip={
-                "html": "<b>{district}</b><br/>Gap {gap_score}<br/>Need {demand_score}<br/>Verified {verified_facilities} / {total_facilities}<br/>{why}",
+                "html": "<b>{district}</b><br/>Gap {gap_score}<br/>Need {demand_score}<br/>Claims {claimed_facilities} of {total_facilities} facilities<br/>Verified {verified_facilities} of claimed<br/>{why}",
                 "style": {"backgroundColor": "#18212f", "color": "white"},
             },
         ),
@@ -641,9 +670,17 @@ def render_score_table(scores):
         "district", "state", "gap_score", "total_facilities",
         "claimed_facilities", "verified_facilities", "low_trust_facilities", "demand_score",
     ]].copy()
+    table["verified_claims"] = table.apply(
+        lambda row: f"{int(row['verified_facilities'] or 0)} of {int(row['claimed_facilities'] or 0)}",
+        axis=1,
+    )
+    table = table[[
+        "district", "state", "gap_score", "total_facilities",
+        "claimed_facilities", "verified_claims", "low_trust_facilities", "demand_score",
+    ]]
     table.columns = [
-        "District", "State", "Gap", "Facilities", "Claimed",
-        "Verified", "Needs review", "Need",
+        "District", "State", "Gap", "Total facilities", "Claims selected care",
+        "Verified claims", "Needs review", "Need",
     ]
     st.dataframe(
         table,
@@ -690,7 +727,8 @@ def render_priority_districts(scores):
             f"<div class='priority-title'>{idx}. {item.get('district')}</div>"
             f"<div class='priority-reason'>Gap {float(item.get('gap_score') or 0):.2f} | "
             f"Need {float(item.get('demand_score') or 0.5):.2f} | "
-            f"{int(item.get('verified_facilities') or 0)} verified of {int(item.get('total_facilities') or 0)}</div>"
+            f"{int(item.get('verified_facilities') or 0)} verified of {int(item.get('claimed_facilities') or 0)} claimed | "
+            f"{int(item.get('total_facilities') or 0)} total</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -969,11 +1007,12 @@ with tab_map:
     detail_cols = st.columns([1.15, 0.85])
     with detail_cols[0]:
         st.subheader(selected_district)
-        d1, d2, d3, d4 = st.columns(4)
-        d1.metric("Claimed", int(selected.get("claimed_facilities") or 0))
-        d2.metric("Verified", int(selected.get("verified_facilities") or 0))
-        d3.metric("Needs review", int(selected.get("low_trust_facilities") or 0))
-        d4.metric("Need", f"{float(selected.get('demand_score') or 0.5):.2f}")
+        d1, d2, d3, d4, d5 = st.columns(5)
+        d1.metric("Total facilities", int(selected.get("total_facilities") or 0))
+        d2.metric("Claims selected care", int(selected.get("claimed_facilities") or 0))
+        d3.metric("Verified", f"{int(selected.get('verified_facilities') or 0)} of {int(selected.get('claimed_facilities') or 0)}")
+        d4.metric("Needs review", int(selected.get("low_trust_facilities") or 0))
+        d5.metric("Need", f"{float(selected.get('demand_score') or 0.5):.2f}")
         with st.expander("Planner notes", expanded=False):
             render_notes_lazy(selected_district, key_suffix=f"district_{selected_district}")
             render_annotation_form(selected_district, key_suffix=f"district_{selected_district}")
@@ -1016,8 +1055,13 @@ with tab_map:
             st.session_state.focus_facility_id = None
             st.rerun()
         facilities = load_facilities(selected_district, selected_capability, low_trust_only=low_trust_only)
+        expected_total = int(selected.get("total_facilities") or 0)
+        if low_trust_only:
+            st.caption(f"Showing {len(facilities)} facilities needing review in {selected_district}.")
+        else:
+            st.caption(f"Showing {len(facilities)} of {expected_total} total facilities in {selected_district}. Selected-care claimers are listed first.")
         if not facilities:
-            st.caption("No facilities match this capability and filter.")
+            st.caption("No facilities match this filter.")
         focused_id = st.session_state.get("focus_facility_id")
         focused = next((f for f in facilities if f.get("facility_id") == focused_id), None)
         if focused:
