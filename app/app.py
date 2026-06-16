@@ -352,12 +352,15 @@ def load_facilities(district, capability=None, low_trust_only=False, limit=40):
 
 
 @st.cache_data(ttl=120)
-def load_review_queue(capability, state, limit=6):
+def load_review_queue(capability, state, district=None, limit=6):
     try:
         state_filter = "" if state == "All states" else "AND coalesce(state, 'Unknown') = %(state)s"
+        district_filter = "" if not district else "AND district = %(district)s"
         params = {"capability": capability, "limit": limit}
         if state != "All states":
             params["state"] = state
+        if district:
+            params["district"] = district
         rows = _query(
             f"""
             SELECT facility_id, name, district, state, trust_bucket, trust_score, trust_flags,
@@ -370,6 +373,7 @@ def load_review_queue(capability, state, limit=6):
                 OR jsonb_array_length(trust_flags) > 0
               )
               {state_filter}
+              {district_filter}
             ORDER BY trust_score NULLS FIRST, name
             LIMIT %(limit)s
             """,
@@ -381,7 +385,7 @@ def load_review_queue(capability, state, limit=6):
             row["capabilities"] = _json(row.get("capabilities"), [])
         return rows
     except Exception:
-        return [
+        rows = [
             {
                 "facility_id": f["facility_id"],
                 "name": f["name"],
@@ -396,6 +400,7 @@ def load_review_queue(capability, state, limit=6):
             for f in mock_data.FACILITIES
             if f["trust_flags"]
         ]
+        return [row for row in rows if not district or row["district"] == district]
 
 
 @st.cache_data(ttl=120)
@@ -964,11 +969,11 @@ with tab_map:
 
     with detail_cols[1]:
         st.subheader("Needs Attention")
-        queue = load_review_queue(selected_capability, selected_state)
+        queue = load_review_queue(selected_capability, selected_state, selected_district)
         if not queue:
-            st.caption("No facilities need attention for this view.")
+            st.caption("No facilities need attention in this district for the selected capability.")
         else:
-            st.caption("Pick one to see the evidence below.")
+            st.caption(f"{selected_district}: pick one to see the evidence below.")
         for idx, item in enumerate(queue, start=1):
             row_cols = st.columns([0.78, 0.22], vertical_alignment="center")
             with row_cols[0]:
