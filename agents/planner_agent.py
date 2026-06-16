@@ -19,7 +19,7 @@ for _candidate in (_THIS_DIR, os.path.join(_THIS_DIR, "code", "agents")):
     if _candidate not in sys.path:
         sys.path.insert(0, _candidate)
 
-import annotation_agent, evidence_agent
+import annotation_agent, evidence_agent, reclassification_agent
 from common import get_client, ENDPOINT_NAME
 
 MAX_TURNS = 6
@@ -29,6 +29,7 @@ TOOL_IMPLS = {}
 for spec, impls in (
     (evidence_agent.TOOLS_SPEC, evidence_agent.TOOL_IMPLS),
     (annotation_agent.TOOLS_SPEC, annotation_agent.TOOL_IMPLS),
+    (reclassification_agent.TOOLS_SPEC, reclassification_agent.TOOL_IMPLS),
 ):
     for tool in spec:
         if tool["function"]["name"] not in TOOL_IMPLS:
@@ -43,7 +44,13 @@ SYSTEM_PROMPT = (
     "claims look unreliable (low trust_score or trust_flags), call that out "
     "explicitly and cite the relevant evidence snippet and confidence score.\n"
     "- Save and recall planner notes at the region or facility level using the "
-    "annotation tools, for use across sessions.\n\n"
+    "annotation tools, for use across sessions.\n"
+    "- Facilities in facility_app carry a confidence score and trust_bucket "
+    "(Verified/Plausible/Unverified/Contradicted). When a planner flags a facility "
+    "as needing review, or asks to find facilities with unreliable data, use "
+    "list_reclassification_candidates and get_facility_detail to investigate, and "
+    "reclassify_facility to re-run extraction (folding in any correction the planner "
+    "gives you) and update its confidence/trust_bucket. Always report the before/after.\n\n"
     "Be concise and concrete - name specific facilities and regions."
 )
 

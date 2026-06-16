@@ -51,3 +51,73 @@ The judging brief explicitly calls out "uncertainty communication" and "persist 
 - This repo is freshly initialized — no schema, data, or code exists yet. The schema doc from Person 1 (step 1/2 above) should become the single source of truth that the extraction, trust-scoring, aggregation, and UI layers are all built against.
 - Always store the evidence snippet and confidence score alongside every extracted field — these are core to the "uncertainty communication" story, not an afterthought.
 - Care gap scores must be computed from *verified* capabilities, not raw claimed text — that's the whole point of the trust-scoring layer.
+
+## Ops / Deployment Notes
+
+These are hard-won — read before touching anything deployment-related.
+
+### Model Serving: SP identity changes per version
+
+Every `databricks.agents.deploy()` call assigns a **new internal service principal** to the served model version. When you deploy v6, it will have a different SP UUID than v5's `b2d4081a-e07c-4546-975c-78d3fa5748bd`. After each new deployment, you must re-run the grants below for the new SP UUID (find it from the `planner_notes_error` field in any Lakebase-touching tool call, or from the `w.current_user.me().user_name` value inside the served model).
+
+### Granting UC permissions to the serving SP
+
+The serving SP is not a normal workspace user — `databricks service-principals list` won't show it. Grant via SQL warehouse (warehouse.run_sql or a notebook):
+
+```sql
+-- Core tables
+GRANT SELECT ON TABLE workspace.default.facility_app TO `<sp-uuid>`;
+GRANT SELECT ON TABLE workspace.default.facility_refined TO `<sp-uuid>`;
+GRANT SELECT ON TABLE workspace.default.facility_confidence TO `<sp-uuid>`;
+GRANT SELECT ON TABLE workspace.default.district_gaps TO `<sp-uuid>`;
+GRANT MODIFY ON TABLE workspace.default.facility_refined TO `<sp-uuid>`;
+GRANT MODIFY ON TABLE workspace.default.facility_confidence TO `<sp-uuid>`;
+
+-- Bronze catalog (needed by get_facility_detail's raw text query)
+GRANT USE CATALOG ON CATALOG `databricks_virtue_foundation_dataset_dais_2026` TO `<sp-uuid>`;
+GRANT USE SCHEMA ON SCHEMA databricks_virtue_foundation_dataset_dais_2026.virtue_foundation_dataset TO `<sp-uuid>`;
+GRANT SELECT ON TABLE databricks_virtue_foundation_dataset_dais_2026.virtue_foundation_dataset.facilities TO `<sp-uuid>`;
+```
+
+### Granting Lakebase Postgres access to the serving SP
+
+Two steps — control plane (role creation) then data plane (GRANTs):
+
+**Step 1 — Create the Postgres role (control plane, always works):**
+```bash
+databricks postgres create-role projects/dbrx-hackathon-2026/branches/production \
+  --role-id sp-<sp-uuid> \
+  --json '{"spec": {"identity_type": "SERVICE_PRINCIPAL", "postgres_role": "<sp-uuid>", "auth_method": "LAKEBASE_OAUTH_V1"}}' \
+  --profile dbrx-hackathon-2026
+```
+Note: `role-id` must start with a letter, hence the `sp-` prefix; `postgres_role` is the raw UUID (no prefix).
+
+**Step 2 — Grant table privileges (data plane, needs the endpoint to be enabled first):**
+```python
+# Run via agents/lakebase.py get_connection() or psql
+GRANT USAGE ON SCHEMA public TO "<sp-uuid>";
+GRANT SELECT, INSERT, UPDATE ON region_annotations TO "<sp-uuid>";
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "<sp-uuid>";
+```
+
+### Fixing a disabled Lakebase endpoint
+
+If `databricks postgres get-endpoint ... -o json` shows `"disabled": true`, connections will fail with `"The endpoint has been disabled. Enable it using the API and retry."` The CLI's `update-endpoint` command rejects `disabled` and `status.disabled` as unknown mask fields. Use the raw REST API with `spec.disabled`:
+
+```python
+import urllib.request, json, subprocess
+
+result = subprocess.run(['databricks','auth','token','--profile','dbrx-hackathon-2026','-o','json'], capture_output=True, text=True)
+token = json.loads(result.stdout)['access_token']
+
+req = urllib.request.Request(
+    'https://dbc-90959f59-20ca.cloud.databricks.com/api/2.0/postgres/projects/dbrx-hackathon-2026/branches/production/endpoints/primary?update_mask=spec.disabled',
+    method='PATCH',
+    headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+    data=json.dumps({'spec': {'disabled': False}}).encode(),
+)
+with urllib.request.urlopen(req) as r:
+    print(r.status)  # 200 = success
+```
+
+Key facts: REST base path is `/api/2.0/postgres/` (not `/api/2.0/lakebase/postgres/v1/`). The working update_mask is `spec.disabled`. After the PATCH, verify with `get-endpoint` that `disabled` is now `false` before retrying connections.
