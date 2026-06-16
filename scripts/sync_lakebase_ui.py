@@ -135,38 +135,49 @@ def _avg_present(values, default=0.5):
     return sum(present) / len(present) if present else default
 
 
+NEGATIVE_ICU_BED_PATTERNS = (
+    r"\b(no|zero|0)\s+(?:icu\s+)?beds?\b",
+    r"\bicu\b.{0,30}\b(no|zero|missing|lack|unknown|not available|not operational|non-operational)\b",
+    r"\b(no|missing|lack|unknown)\b.{0,30}\bicu\b.{0,30}\bbeds?\b",
+)
+POSITIVE_ICU_BED_PATTERNS = (
+    r"\b(\d{1,3})\s*[- ]?(?:icu|intensive care|critical care)\s*beds?\b",
+    r"\b(?:icu|intensive care|critical care)\b.{0,50}\b(\d{1,3})\s*[- ]?beds?\b",
+    r"\b(\d{1,3})\s*[- ]?beds?\b.{0,50}\b(?:icu|intensive care|critical care)\b",
+)
+
+
+def _has_positive_icu_bed_evidence(text):
+    return any(re.search(pattern, text) for pattern in POSITIVE_ICU_BED_PATTERNS)
+
+
+def _has_negative_icu_bed_evidence(text):
+    return any(re.search(pattern, text) for pattern in NEGATIVE_ICU_BED_PATTERNS)
+
+
 def _trust_flags(row):
     flags = _load_jsonish(row.get("trust_flags"), [])
     trust_bucket = row.get("trust_bucket")
     n_contradictions = _as_int(row.get("n_contradictions")) or 0
     beds = _as_int(row.get("beds"))
     caps = set(_load_jsonish(row.get("capabilities"), []))
-    evidence_text = " . ".join(
+    curated_evidence_text = " . ".join(
         str(value or "")
         for value in (
             row.get("summary"),
-            row.get("raw_text"),
             json.dumps(_load_jsonish(row.get("evidence"), {})),
         )
     ).lower()
-    negative_icu_bed_evidence = any(
-        re.search(pattern, evidence_text)
-        for pattern in (
-            r"\b(no|zero|0)\s+(?:icu\s+)?beds?\b",
-            r"\bicu\b.{0,30}\b(no|zero|missing|lack|unknown|not available|not operational|non-operational)\b",
-            r"\b(no|missing|lack|unknown)\b.{0,30}\bicu\b.{0,30}\bbeds?\b",
+    raw_evidence_text = " . ".join(
+        str(value or "")
+        for value in (
+            row.get("raw_text"),
         )
-    )
-    positive_icu_bed_evidence = (
-        not negative_icu_bed_evidence
-        and any(
-            re.search(pattern, evidence_text)
-            for pattern in (
-                r"\b(\d{1,3})\s*[- ]?(?:icu|intensive care|critical care)\s*beds?\b",
-                r"\b(?:icu|intensive care|critical care)\b.{0,50}\b(\d{1,3})\s*[- ]?beds?\b",
-                r"\b(\d{1,3})\s*[- ]?beds?\b.{0,50}\b(?:icu|intensive care|critical care)\b",
-            )
-        )
+    ).lower()
+    positive_icu_bed_evidence = _has_positive_icu_bed_evidence(curated_evidence_text)
+    negative_icu_bed_evidence = (
+        not positive_icu_bed_evidence
+        and (_has_negative_icu_bed_evidence(curated_evidence_text) or _has_negative_icu_bed_evidence(raw_evidence_text))
     )
 
     if flags and positive_icu_bed_evidence:

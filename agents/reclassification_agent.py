@@ -52,33 +52,42 @@ def _sql_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+_NEGATIVE_ICU_BED_PATTERNS = (
+    r"\b(no|zero|0)\s+(?:icu\s+)?beds?\b",
+    r"\bicu\b.{0,30}\b(no|zero|missing|lack|unknown|not available|not operational|non-operational)\b",
+    r"\b(no|missing|lack|unknown)\b.{0,30}\bicu\b.{0,30}\bbeds?\b",
+)
+_POSITIVE_ICU_BED_PATTERNS = (
+    r"\b(\d{1,3})\s*[- ]?(?:icu|intensive care|critical care)\s*beds?\b",
+    r"\b(?:icu|intensive care|critical care)\b.{0,50}\b(\d{1,3})\s*[- ]?beds?\b",
+    r"\b(\d{1,3})\s*[- ]?beds?\b.{0,50}\b(?:icu|intensive care|critical care)\b",
+)
+
+
 def _extract_icu_beds_from_note(note):
     """Return a planner-confirmed ICU bed count when the note states one.
 
     This intentionally only reads explicit ICU/critical-care bed evidence. A
     note saying "ICU bed data missing" or "no ICU beds" should not clear the UI
-    trust flag.
+    trust flag. When multiple notes are combined, the first explicit ICU-bed
+    statement wins; reclassify_facility puts the newest correction first.
     """
     text = (note or "").lower()
     if not text:
         return None
-    negative = (
-        r"\b(no|zero|0)\s+(?:icu\s+)?beds?\b",
-        r"\bicu\b.{0,30}\b(no|zero|missing|lack|unknown|not available|not operational|non-operational)\b",
-        r"\b(no|missing|lack|unknown)\b.{0,30}\bicu\b.{0,30}\bbeds?\b",
-    )
-    if any(re.search(pattern, text) for pattern in negative):
-        return None
 
-    patterns = (
-        r"\b(\d{1,3})\s*[- ]?(?:icu|intensive care|critical care)\s*beds?\b",
-        r"\b(?:icu|intensive care|critical care)\b.{0,50}\b(\d{1,3})\s*[- ]?beds?\b",
-        r"\b(\d{1,3})\s*[- ]?beds?\b.{0,50}\b(?:icu|intensive care|critical care)\b",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return int(match.group(1))
+    matches = []
+    for pattern in _POSITIVE_ICU_BED_PATTERNS:
+        for match in re.finditer(pattern, text):
+            matches.append((match.start(), "positive", int(match.group(1))))
+    for pattern in _NEGATIVE_ICU_BED_PATTERNS:
+        for match in re.finditer(pattern, text):
+            matches.append((match.start(), "negative", None))
+
+    if not matches:
+        return None
+    _, kind, beds = sorted(matches, key=lambda item: item[0])[0]
+    return beds if kind == "positive" else None
     return None
 
 
@@ -274,9 +283,10 @@ def reclassify_facility(facility_id: str, correction_note: str = None):
     if "error" in detail:
         return detail
 
-    notes = [n["note"] for n in detail["planner_notes"]]
+    notes = []
     if correction_note:
         notes.append(correction_note)
+    notes.extend(n["note"] for n in detail["planner_notes"])
     combined_note = " ".join(notes) if notes else None
 
     result = _extract_and_score(
