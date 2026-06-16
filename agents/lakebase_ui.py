@@ -15,9 +15,27 @@ UI_DEMAND = "cg_demand_reference"
 UI_GEOCODE_CACHE = "cg_geocode_cache"
 
 
+def _clean_value(value):
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [_clean_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            _clean_value(key): _clean_value(val)
+            for key, val in value.items()
+        }
+    return value
+
+
+def _clean_row(row):
+    return {key: _clean_value(value) for key, value in row.items()}
+
+
 def _json(value):
     if value is None:
         return None
+    value = _clean_value(value)
     return json.dumps(value)
 
 
@@ -136,6 +154,7 @@ def upsert_demand(rows):
     try:
         with conn.cursor() as cur:
             for row in rows:
+                row = _clean_row(row)
                 cur.execute(
                     f"""
                     INSERT INTO {UI_DEMAND} (
@@ -167,6 +186,7 @@ def upsert_facilities(rows):
     try:
         with conn.cursor() as cur:
             for row in rows:
+                row = _clean_row(row)
                 cur.execute(
                     f"""
                     INSERT INTO {UI_FACILITIES} (

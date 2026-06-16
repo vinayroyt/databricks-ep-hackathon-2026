@@ -737,7 +737,7 @@ def render_map(scores, selected_district):
                 "style": {"backgroundColor": "#18212f", "color": "white"},
             },
         ),
-        width="stretch",
+        use_container_width=True,
         key="district_gap_map",
         on_select="rerun",
         selection_mode="single-object",
@@ -772,7 +772,7 @@ def render_score_table(scores):
     st.dataframe(
         table,
         hide_index=True,
-        width="stretch",
+        use_container_width=True,
         column_config={
             "Gap": st.column_config.ProgressColumn("Gap", min_value=0, max_value=1, format="%.2f"),
             "Need": st.column_config.ProgressColumn("Need", min_value=0, max_value=1, format="%.2f"),
@@ -879,7 +879,7 @@ def render_priority_districts(scores):
             f"</div>",
             unsafe_allow_html=True,
         )
-        if st.button("Review district", key=f"district_{item.get('district')}", width="stretch"):
+        if st.button("Review district", key=f"district_{item.get('district')}"):
             focus_district(item.get("district"))
             st.rerun()
 
@@ -1182,7 +1182,7 @@ with tab_map:
                     unsafe_allow_html=True,
                 )
             with row_cols[1]:
-                if st.button("View", key=f"queue_{item.get('facility_id')}", width="stretch"):
+                if st.button("View", key=f"queue_{item.get('facility_id')}"):
                     focus_queue_item(item)
                     st.rerun()
             if idx < len(queue):
@@ -1193,7 +1193,7 @@ with tab_map:
     low_trust_only = fe_cols[1].toggle("Only needs review", value=False)
     if not st.session_state.show_facilities:
         st.caption("Open facility evidence when you need the details.")
-        if st.button("Show facility evidence", width="stretch"):
+        if st.button("Show facility evidence"):
             st.session_state.show_facilities = True
             st.rerun()
     else:
@@ -1230,13 +1230,13 @@ with tab_fixes:
         st.write(f"- {insight}")
 
     st.subheader("Data Counts")
-    st.dataframe(load_lakebase_data_counts(), hide_index=True, width="stretch")
+    st.dataframe(load_lakebase_data_counts(), hide_index=True, use_container_width=True)
     if "show_warehouse_counts" not in st.session_state:
         st.session_state.show_warehouse_counts = False
     if st.button("Load raw to gold counts"):
         st.session_state.show_warehouse_counts = True
     if st.session_state.show_warehouse_counts:
-        st.dataframe(load_warehouse_lineage_counts(), hide_index=True, width="stretch")
+        st.dataframe(load_warehouse_lineage_counts(), hide_index=True, use_container_width=True)
 
     st.subheader("What We Cleaned")
     st.write("These fixes turn messy source records into planner-ready district and facility evidence.")
@@ -1279,7 +1279,7 @@ with tab_fixes:
             "Why it matters": "Planner feedback improves the data over time.",
         },
     ]
-    st.dataframe(pd.DataFrame(fixes), hide_index=True, width="stretch")
+    st.dataframe(pd.DataFrame(fixes), hide_index=True, use_container_width=True)
 
     st.subheader("Pipeline Layers")
     st.write("Raw facilities + pincode reference + NFHS demand + LLM extraction + trust scoring + planner annotations.")
