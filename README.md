@@ -48,3 +48,14 @@ Human flags:
 - `missing_capability`
 
 The last three set `reclassification_priority=true`, which the notebook uses to push facilities into the next extraction/backfill pass.
+
+## Reclassification Demo Path
+
+In the facility evidence panel, use **Recheck evidence** after adding a planner
+note or correction. The app calls `reclassification_agent.reclassify_facility()`,
+which re-runs extraction against the facility source text plus planner context,
+updates `facility_refined` / `facility_confidence`, refreshes the one affected
+Lakebase facility row, and recomputes district capability scores.
+
+This can move a district toward green only when the refreshed evidence increases
+verified supply or resolves low-trust data. It does not force scores manually.

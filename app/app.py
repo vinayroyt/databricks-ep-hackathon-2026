@@ -9,12 +9,17 @@ import streamlit as st
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENTS = os.path.join(ROOT, "agents")
+SCRIPTS = os.path.join(ROOT, "scripts")
 if AGENTS not in sys.path:
     sys.path.insert(0, AGENTS)
+if SCRIPTS not in sys.path:
+    sys.path.insert(0, SCRIPTS)
 
 import annotation_agent
 import lakebase_ui
 import mock_data
+import reclassification_agent
+import sync_lakebase_ui
 from lakebase import get_connection
 
 
@@ -507,6 +512,40 @@ def save_note(region_id, facility_id, note, author, human_flag):
     return result
 
 
+def _gap_snapshot(district, capability):
+    rows = _query(
+        f"""
+        SELECT gap_score, verified_facilities, claimed_facilities, low_trust_facilities, why
+        FROM {lakebase_ui.UI_SCORES}
+        WHERE district = %(district)s AND capability = %(capability)s
+        """,
+        {"district": district, "capability": capability},
+    )
+    return rows[0] if rows else {}
+
+
+def recheck_facility(facility_id, district, capability, correction_note=None):
+    before_gap = _gap_snapshot(district, capability)
+    result = reclassification_agent.reclassify_facility(
+        facility_id=facility_id,
+        correction_note=correction_note.strip() if correction_note else None,
+    )
+    if "error" in result:
+        return result
+
+    refreshed = sync_lakebase_ui.sync_facility(facility_id)
+    st.cache_data.clear()
+    after_gap = _gap_snapshot(refreshed.get("district") or district, capability)
+    return {
+        "facility_id": facility_id,
+        "facility_name": refreshed.get("name") or result.get("name"),
+        "reclassification": result,
+        "refreshed_facility": refreshed,
+        "before_gap": before_gap,
+        "after_gap": after_gap,
+    }
+
+
 def score_color(score):
     score = max(0.0, min(float(score or 0), 1.0))
     red = int(48 + score * 190)
@@ -690,6 +729,41 @@ def render_notes_lazy(region_id, facility_id=None, limit=6, key_suffix="notes"):
     render_notes(region_id, facility_id=facility_id, limit=limit)
 
 
+def render_recheck_result(result):
+    reclassed = result.get("reclassification", {})
+    before = reclassed.get("before", {})
+    after = reclassed.get("after", {})
+    before_gap = result.get("before_gap") or {}
+    after_gap = result.get("after_gap") or {}
+
+    st.success("Evidence rechecked and scores refreshed.")
+    cols = st.columns(3)
+    cols[0].metric(
+        "Trust",
+        after.get("trust_bucket") or "Unknown",
+        delta=f"was {before.get('trust_bucket') or 'Unknown'}",
+    )
+    before_conf = before.get("confidence")
+    after_conf = after.get("confidence")
+    cols[1].metric(
+        "Confidence",
+        f"{float(after_conf):.1f}" if after_conf is not None else "Unknown",
+        delta=(f"{float(after_conf) - float(before_conf):+.1f}" if before_conf is not None and after_conf is not None else None),
+    )
+    before_score = before_gap.get("gap_score")
+    after_score = after_gap.get("gap_score")
+    cols[2].metric(
+        "District gap",
+        f"{float(after_score):.2f}" if after_score is not None else "Unknown",
+        delta=(f"{float(after_score) - float(before_score):+.2f}" if before_score is not None and after_score is not None else None),
+        delta_color="inverse",
+    )
+
+    summary = reclassed.get("extraction_summary")
+    if summary:
+        st.caption(summary)
+
+
 def render_facility(facility, district, force_open=False):
     trust_bucket = facility.get("trust_bucket") or "Unknown"
     tone = TRUST_TONE.get(trust_bucket, "neutral")
@@ -742,6 +816,30 @@ def render_facility(facility, district, force_open=False):
                 if ev:
                     st.markdown(f"<div class='evidence'>{ev}</div>", unsafe_allow_html=True)
 
+        recheck_key = f"recheck_result_{facility['facility_id']}"
+        with st.expander("Recheck evidence", expanded=bool(st.session_state.get(recheck_key))):
+            st.caption("Use after adding field evidence or a correction note. Scores only improve if the evidence supports it.")
+            with st.form(f"recheck_{facility['facility_id']}", clear_on_submit=True):
+                correction = st.text_area("Optional correction", height=72, key=f"recheck_note_{facility['facility_id']}")
+                submitted = st.form_submit_button("Recheck facility")
+                if submitted:
+                    with st.spinner("Rechecking evidence and refreshing scores..."):
+                        result = recheck_facility(
+                            facility_id=facility["facility_id"],
+                            district=facility.get("district") or district,
+                            capability=st.session_state.get("selected_capability", CAPABILITIES[0]),
+                            correction_note=correction,
+                        )
+                    if "error" in result:
+                        st.error(result["error"])
+                    else:
+                        st.session_state[recheck_key] = result
+                        st.rerun()
+
+            result = st.session_state.get(recheck_key)
+            if result:
+                render_recheck_result(result)
+
         with st.expander("Planner notes", expanded=force_open):
             render_notes_lazy(district, facility_id=facility["facility_id"], key_suffix=facility["facility_id"])
             render_annotation_form(district, facility_id=facility["facility_id"], key_suffix=facility["facility_id"])
@@ -776,6 +874,7 @@ st.markdown(
 
 with st.sidebar:
     selected_capability = st.selectbox("Capability", CAPABILITIES, format_func=lambda s: s.replace("_", " ").title())
+    st.session_state.selected_capability = selected_capability
     selected_state = st.selectbox("State", load_states())
     with st.expander("More filters", expanded=False):
         include_unknown = st.toggle("Show unknown districts", value=False)

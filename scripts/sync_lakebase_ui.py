@@ -214,7 +214,7 @@ def _normalize_facility(row):
     }
 
 
-def fetch_facility_rows(limit=None):
+def fetch_facility_rows(limit=None, facility_id=None):
     columns = _table_columns(FACILITY_APP)
     required = ["facility_id", "name", "district"]
     missing = [c for c in required if c not in columns]
@@ -248,15 +248,22 @@ def fetch_facility_rows(limit=None):
         """
         select_list.append("raw.raw_text AS raw_text")
 
+    conditions = ["f.facility_id IS NOT NULL"]
+    params = {}
+    if facility_id:
+        conditions.append("f.facility_id = :facility_id")
+        params["facility_id"] = facility_id
+
     limit_clause = f"LIMIT {int(limit)}" if limit else ""
     _, rows = warehouse.run_sql(
         f"""
         SELECT {", ".join(select_list)}
         FROM {FACILITY_APP} f
         {raw_join}
-        WHERE facility_id IS NOT NULL
+        WHERE {" AND ".join(conditions)}
         {limit_clause}
-        """
+        """,
+        params,
     )
     return [_normalize_facility(row) for row in rows]
 
@@ -385,6 +392,24 @@ def sync(limit=None):
     lakebase_ui.refresh_districts_and_scores(CAPABILITIES)
     print("Lakebase UI sync complete.", flush=True)
     return len(rows)
+
+
+def sync_facility(facility_id):
+    """Refresh one facility from facility_app into Lakebase and recompute scores.
+
+    This is the fast path used after a planner-triggered reclassification. The
+    analytical source of truth stays in Databricks; Lakebase is only refreshed
+    for the affected serving row plus district/capability aggregates.
+    """
+    annotation_agent.ensure_annotation_table()
+    lakebase_ui.ensure_ui_tables()
+    rows = fetch_facility_rows(facility_id=facility_id)
+    if not rows:
+        raise RuntimeError(f"No facility found in {FACILITY_APP}: {facility_id}")
+    rows = apply_pincode_backfill(rows, fetch_pincode_state_map())
+    lakebase_ui.upsert_facilities(rows)
+    lakebase_ui.refresh_districts_and_scores(CAPABILITIES)
+    return rows[0]
 
 
 if __name__ == "__main__":
