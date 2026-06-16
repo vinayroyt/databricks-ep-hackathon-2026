@@ -6,6 +6,7 @@ from datetime import datetime
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
+import streamlit.components.v1 as components
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENTS = os.path.join(ROOT, "agents")
@@ -780,6 +781,88 @@ def render_score_table(scores):
     )
 
 
+ARCHITECTURE_MERMAID = """
+flowchart LR
+  subgraph Sources["Source Data"]
+    A["Raw facilities<br/>free-text claims"]
+    B["India pincode directory<br/>district/state/geocode"]
+    C["NFHS-5 district indicators<br/>demand signals"]
+  end
+
+  subgraph Delta["Databricks Delta Pipeline"]
+    D["Cleaning + backfill<br/>normalize state/district/geocode"]
+    E["LLM extraction<br/>capabilities, evidence, fields"]
+    F["Trust scoring<br/>confidence + flags"]
+    G["Silver<br/>facility_refined"]
+    H["Gold<br/>facility_confidence<br/>district_gaps"]
+    I["Serving view<br/>facility_app"]
+  end
+
+  subgraph Lakebase["Lakebase UI Cache"]
+    J["cg_facilities"]
+    K["cg_districts"]
+    L["cg_demand_reference"]
+    M["cg_district_capability_scores"]
+    N["public.region_annotations"]
+  end
+
+  subgraph App["VeriCare Map"]
+    O["Map<br/>district gap score"]
+    P["Facility evidence<br/>claims, snippets, trust flags"]
+    Q["Planner action<br/>notes + recheck"]
+    R["Data Fixes<br/>counts + normalization story"]
+  end
+
+  A --> D
+  B --> D
+  C --> H
+  D --> E
+  E --> G
+  G --> F
+  F --> H
+  G --> I
+  H --> I
+  I --> J
+  C --> L
+  J --> K
+  J --> M
+  L --> M
+  J --> O
+  K --> O
+  M --> O
+  J --> P
+  Q --> N
+  N --> E
+  Q --> E
+  E --> G
+  H --> M
+  J --> R
+  K --> R
+  L --> R
+  M --> R
+"""
+
+
+def render_mermaid_chart(source, height=760):
+    escaped = json.dumps(source)
+    components.html(
+        f"""
+        <div class="mermaid" style="font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif;">
+        </div>
+        <script type="module">
+          import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+          mermaid.initialize({{ startOnLoad: false, theme: 'base', securityLevel: 'loose' }});
+          const source = {escaped};
+          const container = document.querySelector('.mermaid');
+          const {{ svg }} = await mermaid.render('vericareArchitecture', source);
+          container.innerHTML = svg;
+        </script>
+        """,
+        height=height,
+        scrolling=True,
+    )
+
+
 def short_reason(item):
     flags = item.get("trust_flags") or []
     if flags:
@@ -1067,7 +1150,7 @@ if selected_district != previous_district and selected_district != st.session_st
 st.session_state.focus_district = selected_district
 selected = scores[scores["district"] == selected_district].iloc[0]
 
-tab_map, tab_fixes = st.tabs(["Map", "Data Fixes"])
+tab_map, tab_fixes, tab_architecture = st.tabs(["Map", "Data Fixes", "Architecture"])
 
 with tab_map:
     metric_cols = st.columns(3)
@@ -1224,6 +1307,27 @@ with tab_fixes:
     st.subheader("Pipeline Layers")
     st.write("Raw facilities + pincode reference + NFHS demand + LLM extraction + trust scoring + planner annotations.")
     st.caption("The app reads the cleaned Lakebase cache: cg_facilities, cg_districts, cg_demand_reference, and cg_district_capability_scores.")
+
+with tab_architecture:
+    st.subheader("End-To-End Architecture")
+    st.write("The system separates analytical processing in Databricks from fast planner interaction in Lakebase and Streamlit.")
+    render_mermaid_chart(ARCHITECTURE_MERMAID)
+
+    cols = st.columns(4)
+    cols[0].metric("Sources", "3")
+    cols[1].metric("Delta layers", "Silver + Gold")
+    cols[2].metric("Lakebase tables", "5")
+    cols[3].metric("Feedback loop", "Human recheck")
+
+    st.subheader("Flow Summary")
+    st.write(
+        "Raw facility records are cleaned and enriched with pincode geography, then LLM extraction turns text into structured "
+        "capabilities and evidence. Trust scoring writes silver/gold Delta tables, the sync script caches planner-ready rows "
+        "in Lakebase, and the Streamlit app lets users inspect gaps, save notes, and trigger reclassification."
+    )
+
+    with st.expander("Mermaid source", expanded=False):
+        st.code(ARCHITECTURE_MERMAID.strip(), language="mermaid")
 
 updated_at = overview.get("updated_at")
 updated = updated_at.isoformat() if hasattr(updated_at, "isoformat") else (updated_at or "not synced")
