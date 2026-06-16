@@ -687,19 +687,35 @@ def render_priority_districts(scores):
             st.rerun()
 
 
-def render_annotation_form(region_id, facility_id=None, key_suffix="region"):
+def render_annotation_form(region_id, facility_id=None, key_suffix="region", allow_recheck=False, capability=None, recheck_key=None):
     with st.form(f"annotation_{key_suffix}", clear_on_submit=True):
         note = st.text_area("Note", height=76, key=f"note_{key_suffix}")
         cols = st.columns([1, 1])
         author = cols[0].text_input("Author", value="TrustedPlatformUser", key=f"author_{key_suffix}")
         flag_label = cols[1].selectbox("Flag", list(FLAG_OPTIONS), key=f"flag_{key_suffix}")
+        recheck_now = False
+        if allow_recheck and facility_id:
+            recheck_now = st.checkbox("Recheck evidence after saving", value=True, key=f"recheck_after_save_{key_suffix}")
         submitted = st.form_submit_button("Save")
         if submitted and note.strip():
             result = save_note(region_id, facility_id, note.strip(), author.strip(), FLAG_OPTIONS[flag_label])
             if "error" in result:
                 st.error(result["error"])
             else:
-                st.success("Saved.")
+                if recheck_now:
+                    with st.spinner("Saving note, rechecking evidence, and refreshing scores..."):
+                        recheck_result = recheck_facility(
+                            facility_id=facility_id,
+                            district=region_id,
+                            capability=capability or st.session_state.get("selected_capability", CAPABILITIES[0]),
+                            correction_note=note.strip(),
+                        )
+                    if "error" in recheck_result:
+                        st.error(recheck_result["error"])
+                    else:
+                        st.session_state[recheck_key or f"recheck_result_{facility_id}"] = recheck_result
+                else:
+                    st.success("Saved.")
                 st.rerun()
 
 
@@ -817,32 +833,33 @@ def render_facility(facility, district, force_open=False):
                     st.markdown(f"<div class='evidence'>{ev}</div>", unsafe_allow_html=True)
 
         recheck_key = f"recheck_result_{facility['facility_id']}"
-        with st.expander("Recheck evidence", expanded=bool(st.session_state.get(recheck_key))):
-            st.caption("Use after adding field evidence or a correction note. A note confirming ICU beds can clear the missing-bed flag; a note saying data is missing will keep it red.")
-            with st.form(f"recheck_{facility['facility_id']}", clear_on_submit=True):
-                correction = st.text_area("Optional correction", height=72, key=f"recheck_note_{facility['facility_id']}")
-                submitted = st.form_submit_button("Recheck facility")
-                if submitted:
-                    with st.spinner("Rechecking evidence and refreshing scores..."):
-                        result = recheck_facility(
-                            facility_id=facility["facility_id"],
-                            district=facility.get("district") or district,
-                            capability=st.session_state.get("selected_capability", CAPABILITIES[0]),
-                            correction_note=correction,
-                        )
-                    if "error" in result:
-                        st.error(result["error"])
-                    else:
-                        st.session_state[recheck_key] = result
-                        st.rerun()
+        with st.expander("Planner action", expanded=force_open or bool(st.session_state.get(recheck_key))):
+            st.caption("Save field evidence and recheck in one step. Confirmed ICU bed counts can clear the missing-bed flag; missing-data notes keep it red.")
+            render_notes_lazy(district, facility_id=facility["facility_id"], key_suffix=facility["facility_id"])
+            render_annotation_form(
+                district,
+                facility_id=facility["facility_id"],
+                key_suffix=facility["facility_id"],
+                allow_recheck=True,
+                capability=st.session_state.get("selected_capability", CAPABILITIES[0]),
+                recheck_key=recheck_key,
+            )
+            if st.button("Recheck using saved notes", key=f"recheck_saved_{facility['facility_id']}"):
+                with st.spinner("Rechecking evidence and refreshing scores..."):
+                    result = recheck_facility(
+                        facility_id=facility["facility_id"],
+                        district=facility.get("district") or district,
+                        capability=st.session_state.get("selected_capability", CAPABILITIES[0]),
+                    )
+                if "error" in result:
+                    st.error(result["error"])
+                else:
+                    st.session_state[recheck_key] = result
+                    st.rerun()
 
             result = st.session_state.get(recheck_key)
             if result:
                 render_recheck_result(result)
-
-        with st.expander("Planner notes", expanded=force_open):
-            render_notes_lazy(district, facility_id=facility["facility_id"], key_suffix=facility["facility_id"])
-            render_annotation_form(district, facility_id=facility["facility_id"], key_suffix=facility["facility_id"])
 
 
 overview = load_overview()
