@@ -1,0 +1,45 @@
+bundle:
+  name: care-gap-atlas
+
+variables:
+  postgres_branch:
+    description: Full Lakebase Postgres branch resource name. Obtain by running `databricks postgres list-branches {project-name}`, select the desired item from the output array and use its .name value. Requires the project resource name.
+  postgres_database:
+    description: Full Lakebase Postgres database resource name. Obtain by running `databricks postgres list-databases {branch-name}`, select the desired item from the output array and use its .name value. Requires the branch resource name.
+  postgres_project:
+    description: Full Lakebase Postgres project resource name. Obtain by running `databricks postgres list-projects`, select the desired item from the output array and use its .name value.
+  serving_endpoint_name:
+    description: Serving endpoint name
+
+resources:
+  apps:
+    app:
+      name: "care-gap-atlas"
+      description: "Care Gap Atlas - healthcare facility gap analysis and planner annotations"
+      source_code_path: ./
+      user_api_scopes:
+        - serving.serving-endpoints
+
+      # The resources which this app has access to.
+      resources:
+        - name: postgres
+          postgres:
+            branch: ${var.postgres_branch}
+            database: ${var.postgres_database}
+            permission: CAN_CONNECT_AND_CREATE
+        - name: serving-endpoint
+          serving_endpoint:
+            name: ${var.serving_endpoint_name}
+            permission: CAN_QUERY
+
+targets:
+  default:
+    default: true
+    workspace:
+      host: https://dbc-90959f59-20ca.cloud.databricks.com
+
+    variables:
+      postgres_branch: projects/dbrx-hackathon-2026/branches/production
+      postgres_database: projects/dbrx-hackathon-2026/branches/production/databases/databricks-postgres
+      postgres_project: projects/dbrx-hackathon-2026
+      serving_endpoint_name: care_gap_planner_agent
