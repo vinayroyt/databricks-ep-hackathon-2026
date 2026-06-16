@@ -1,4 +1,5 @@
 import json
+import html
 import os
 import sys
 import inspect
@@ -710,14 +711,33 @@ def _gap_snapshot(district, capability):
 
 def recheck_facility(facility_id, district, capability, correction_note=None):
     before_gap = _gap_snapshot(district, capability)
-    result = reclassification_agent.reclassify_facility(
-        facility_id=facility_id,
-        correction_note=correction_note.strip() if correction_note else None,
-    )
+    try:
+        result = reclassification_agent.reclassify_facility(
+            facility_id=facility_id,
+            correction_note=correction_note.strip() if correction_note else None,
+        )
+    except Exception as exc:
+        endpoint_name = getattr(reclassification_agent, "ENDPOINT_NAME", "configured endpoint")
+        return {
+            "error": (
+                f"Recheck could not run against `{endpoint_name}`. "
+                f"Confirm the custom reclassification serving endpoint exists, is READY, and the app has CAN_QUERY. "
+                f"Details: {type(exc).__name__}: {exc}"
+            )
+        }
     if "error" in result:
         return result
 
-    refreshed = sync_lakebase_ui.sync_facility(facility_id)
+    try:
+        refreshed = sync_lakebase_ui.sync_facility(facility_id)
+    except Exception as exc:
+        return {
+            "error": (
+                "Reclassification completed, but Lakebase refresh failed. "
+                f"Details: {type(exc).__name__}: {exc}"
+            ),
+            "reclassification": result,
+        }
     st.cache_data.clear()
     after_gap = _gap_snapshot(refreshed.get("district") or district, capability)
     return {
@@ -1003,10 +1023,10 @@ def render_district_summary(selected, capability):
             </div>
           </div>
           <div class='summary-chip-row'>
-            <span class='summary-chip'>Need {need:.2f}</span>
-            <span class='summary-chip'>Gap {gap:.2f}</span>
-            <span class='summary-chip'>{claimed} claimed</span>
-            <span class='summary-chip'>{total} facilities</span>
+            <span class='summary-chip' title='Demand score: normalized district need from NFHS indicators. Higher means more urgent demand pressure.'>Need {need:.2f}</span>
+            <span class='summary-chip' title='Selected gap: 65% supply gap plus 35% demand score. Higher means a larger care gap.'>Gap {gap:.2f}</span>
+            <span class='summary-chip' title='Facilities that claim the selected capability in extracted or claimed capabilities.'>{claimed} claimed</span>
+            <span class='summary-chip' title='All facilities counted in this district, used as the supply denominator.'>{total} facilities</span>
           </div>
         </div>
         """,
@@ -1086,6 +1106,7 @@ def render_recheck_result(result):
         "Trust",
         after.get("trust_bucket") or "Unknown",
         delta=f"was {before.get('trust_bucket') or 'Unknown'}",
+        help="Trust bucket after reclassification. Verified/Plausible can count as usable; Unverified/Contradicted needs review.",
     )
     before_conf = before.get("confidence")
     after_conf = after.get("confidence")
@@ -1093,6 +1114,7 @@ def render_recheck_result(result):
         "Confidence",
         f"{float(after_conf):.1f}" if after_conf is not None else "Unknown",
         delta=(f"{float(after_conf) - float(before_conf):+.1f}" if before_conf is not None and after_conf is not None else None),
+        help="0-100 deterministic confidence score. 75+ is strong, 50-74 is plausible, below 50 is weak.",
     )
     before_score = before_gap.get("gap_score")
     after_score = after_gap.get("gap_score")
@@ -1101,6 +1123,7 @@ def render_recheck_result(result):
         f"{float(after_score):.2f}" if after_score is not None else "Unknown",
         delta=(f"{float(after_score) - float(before_score):+.2f}" if before_score is not None and after_score is not None else None),
         delta_color="inverse",
+        help="Selected capability gap after reclassification. Lower is better; redder districts have higher values.",
     )
 
     summary = reclassed.get("extraction_summary")
@@ -1132,7 +1155,11 @@ def render_facility(facility, district, force_open=False):
         with right:
             badge(trust_bucket, tone)
             if score is not None:
-                st.metric("Trust", f"{float(score):.2f}")
+                st.metric(
+                    "Trust",
+                    f"{float(score):.2f}",
+                    help="Facility trust score normalized from confidence: confidence / 100. Below 0.5 is low trust.",
+                )
 
         if flags:
             inline_badges(flags, "bad")
@@ -1159,7 +1186,13 @@ def render_facility(facility, district, force_open=False):
                 if value in (None, "", [], {}):
                     continue
                 conf = confidence.get(key, confidence.get("overall"))
-                st.write(f"{key}: {value}" + (f" | confidence {conf}" if conf is not None else ""))
+                line = f"{html.escape(str(key))}: {html.escape(str(value))}"
+                if conf is not None:
+                    line += (
+                        f" <span title='Field confidence from extracted evidence. Higher is better; "
+                        f"low values should be reviewed.'>| confidence {html.escape(str(conf))}</span>"
+                    )
+                st.markdown(line, unsafe_allow_html=True)
                 ev = evidence.get(key)
                 if ev:
                     st.markdown(f"<div class='evidence'>{ev}</div>", unsafe_allow_html=True)
@@ -1272,13 +1305,25 @@ if selected_district != previous_district and selected_district != st.session_st
 st.session_state.focus_district = selected_district
 selected = scores[scores["district"] == selected_district].iloc[0]
 
-tab_map, tab_fixes, tab_architecture = st.tabs(["Map", "Data Fixes", "Architecture"])
+tab_map, tab_scores, tab_fixes, tab_architecture = st.tabs(["Map", "Score Guide", "Data Fixes", "Architecture"])
 
 with tab_map:
     metric_cols = st.columns(3)
-    metric_cols[0].metric("Places checked", f"{int(overview['facilities']):,}")
-    metric_cols[1].metric("Districts", f"{int(overview['districts']):,}")
-    metric_cols[2].metric("Selected gap", f"{float(selected['gap_score']):.2f}")
+    metric_cols[0].metric(
+        "Places checked",
+        f"{int(overview['facilities']):,}",
+        help="Facilities currently loaded in the Lakebase app cache.",
+    )
+    metric_cols[1].metric(
+        "Districts",
+        f"{int(overview['districts']):,}",
+        help="Districts with facility rows available to the map.",
+    )
+    metric_cols[2].metric(
+        "Selected gap",
+        f"{float(selected['gap_score']):.2f}",
+        help="Care-gap score for the selected district and capability: 65% supply gap plus 35% demand score. Higher is worse.",
+    )
 
     map_col, table_col = st.columns([1.3, 1])
     with map_col:
@@ -1382,6 +1427,125 @@ with tab_map:
                 continue
             render_facility(facility, selected_district)
 
+with tab_scores:
+    st.subheader("How Scores Are Computed")
+    st.write("These values are computed from verified facility evidence, deterministic trust rules, and district demand signals.")
+
+    total = int(selected.get("total_facilities") or 0)
+    claimed = int(selected.get("claimed_facilities") or 0)
+    verified = int(selected.get("verified_facilities") or 0)
+    review = int(selected.get("low_trust_facilities") or 0)
+    demand = float(selected.get("demand_score") or 0.5)
+    supply_gap = 1.0 - min(1.0, verified / max(1, total))
+    selected_gap = float(selected.get("gap_score") or ((0.65 * supply_gap) + (0.35 * demand)))
+
+    st.markdown(f"<div class='why'>{selected_district} / {selected_capability.replace('_', ' ').title()}: selected gap = {selected_gap:.2f}</div>", unsafe_allow_html=True)
+    formula_cols = st.columns(3)
+    formula_cols[0].metric(
+        "Supply gap",
+        f"{supply_gap:.2f}",
+        help="1 - verified facilities / total facilities. Lower is better because more supply is verified.",
+    )
+    formula_cols[1].metric(
+        "Demand score",
+        f"{demand:.2f}",
+        help="Normalized district need from NFHS indicators. Higher means more urgent local need.",
+    )
+    formula_cols[2].metric(
+        "Selected gap",
+        f"{selected_gap:.2f}",
+        help="0.65 * supply gap + 0.35 * demand score. Higher is worse and appears redder on the map.",
+    )
+    st.code(
+        f"""supply_gap = 1 - ({verified} verified / max(1, {total} total)) = {supply_gap:.2f}
+selected_gap = (0.65 * {supply_gap:.2f}) + (0.35 * {demand:.2f}) = {selected_gap:.2f}""",
+        language="text",
+    )
+
+    rows = [
+        {
+            "Value": "Total facilities",
+            "Where shown": "District summary, map tooltip",
+            "How computed": "Count of all Lakebase cg_facilities rows in the selected district.",
+            "Good vs bad": "Context only. More facilities is not automatically good unless selected-care capability is verified.",
+            "Why it matters": "Denominator for district-level supply coverage.",
+        },
+        {
+            "Value": "Claims selected care",
+            "Where shown": "District summary, map tooltip",
+            "How computed": "Facilities where capabilities or claimed_capabilities contains the selected capability.",
+            "Good vs bad": "Good when claims are also verified. Risky when many claims exist but verification is low.",
+            "Why it matters": "Shows what the raw/extracted data claims is available.",
+        },
+        {
+            "Value": "Verified",
+            "Where shown": "District summary",
+            "How computed": "Selected-capability facilities with trust_bucket Verified/Plausible and trust_score >= 0.5.",
+            "Good vs bad": "Higher is better. Zero or low verified supply drives red districts.",
+            "Why it matters": "Only verified supply reduces the care gap.",
+        },
+        {
+            "Value": "Needs review",
+            "Where shown": "Needs Attention list",
+            "How computed": "Selected-capability facilities that are Contradicted/Unverified, trust_score < 0.5, or have trust_flags.",
+            "Good vs bad": "Lower is better. High values mean the district needs field follow-up or reclassification.",
+            "Why it matters": "Planner work queue for follow-up and reclassification.",
+        },
+        {
+            "Value": "Demand score",
+            "Where shown": "District summary, selected gap formula",
+            "How computed": "Normalized district need from NFHS indicators such as institutional births, stunting, and anaemia.",
+            "Good vs bad": "Lower means less measured demand pressure. Higher means the same supply gap is more urgent.",
+            "Why it matters": "Prioritizes high-need districts even when facility counts look similar.",
+        },
+        {
+            "Value": "Confidence",
+            "Where shown": "Facility evidence / gold table",
+            "How computed": "0-100 weighted score: equipment support 35%, type plausibility 25%, field coverage 25%, recency 15%.",
+            "Good vs bad": "75+ is strong, 50-74 is usable but reviewable, below 50 is weak.",
+            "Why it matters": "Explains how much we trust extracted facility facts.",
+        },
+        {
+            "Value": "Trust score",
+            "Where shown": "Facility evidence, district scoring",
+            "How computed": "confidence / 100.",
+            "Good vs bad": "Closer to 1.0 is better. Below 0.5 counts as low trust.",
+            "Why it matters": "Normalized score used by UI and aggregate scoring.",
+        },
+        {
+            "Value": "Trust bucket",
+            "Where shown": "Facility evidence badge",
+            "How computed": "Contradicted if any contradictions; Verified if confidence >= 75 and evidence is not Low; Plausible if confidence >= 50; otherwise Unverified.",
+            "Good vs bad": "Verified/Plausible can count as usable. Unverified/Contradicted needs review.",
+            "Why it matters": "Human-readable status for planners.",
+        },
+        {
+            "Value": "Evidence level",
+            "Where shown": "Gold table / detail fields",
+            "How computed": "High when 3+ scoring signals exist, Medium when 2 exist, Low when 0-1 exist.",
+            "Good vs bad": "High is best. Low means there is not enough supporting data even if the claim sounds strong.",
+            "Why it matters": "Prevents high confidence from thin evidence.",
+        },
+        {
+            "Value": "Trust flags",
+            "Where shown": "Needs Attention and facility evidence",
+            "How computed": "Rule-based explanations such as claim conflicts, ICU claim without ICU bed evidence, or bed count too low.",
+            "Good vs bad": "No flags is best. Any flag is a specific action item.",
+            "Why it matters": "Turns a red flag into an actionable reason.",
+        },
+        {
+            "Value": "Why",
+            "Where shown": "District explanation line",
+            "How computed": "Generated from district aggregate counts: claimed, total, verified, and demand score.",
+            "Good vs bad": "Good when it says claims are verified and review count is low. Bad when claims exceed verified evidence.",
+            "Why it matters": "One sentence a planner can repeat in the room.",
+        },
+    ]
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    st.subheader("Source Tables")
+    st.write("District values are served from `cg_district_capability_scores`. Facility trust values come from `workspace.default.facility_confidence`, then sync into `cg_facilities` for the app.")
+
 with tab_fixes:
     st.subheader("Demo Talking Points")
     for insight in load_demo_insights(selected_capability, selected_state):
@@ -1449,10 +1613,10 @@ with tab_architecture:
     st.code(ARCHITECTURE_ASCII.strip(), language="text")
 
     cols = st.columns(4)
-    cols[0].metric("Frontend", "Databricks App")
-    cols[1].metric("Analytics", "Delta + SQL")
-    cols[2].metric("Serving DB", "Lakebase")
-    cols[3].metric("Automation", "Agents")
+    cols[0].metric("Frontend", "Databricks App", help="Streamlit UI deployed as a Databricks App.")
+    cols[1].metric("Analytics", "Delta + SQL", help="Delta tables and SQL Warehouse hold the analytical source of truth.")
+    cols[2].metric("Serving DB", "Lakebase", help="Fast UI cache plus planner annotations and writeback state.")
+    cols[3].metric("Automation", "Agents", help="Annotation and reclassification agents handle planner feedback and rechecks.")
 
     st.subheader("Flow Summary")
     st.write(
