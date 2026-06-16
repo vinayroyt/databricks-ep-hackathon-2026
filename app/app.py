@@ -818,7 +818,7 @@ def render_facility(facility, district, force_open=False):
 
         recheck_key = f"recheck_result_{facility['facility_id']}"
         with st.expander("Recheck evidence", expanded=bool(st.session_state.get(recheck_key))):
-            st.caption("Use after adding field evidence or a correction note. Scores only improve if the evidence supports it.")
+            st.caption("Use after adding field evidence or a correction note. A note confirming ICU beds can clear the missing-bed flag; a note saying data is missing will keep it red.")
             with st.form(f"recheck_{facility['facility_id']}", clear_on_submit=True):
                 correction = st.text_area("Optional correction", height=72, key=f"recheck_note_{facility['facility_id']}")
                 submitted = st.form_submit_button("Recheck facility")

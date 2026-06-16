@@ -16,6 +16,7 @@ region_annotations via annotation_agent.
 """
 import json
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -144,12 +145,39 @@ def _trust_flags(row):
     n_contradictions = _as_int(row.get("n_contradictions")) or 0
     beds = _as_int(row.get("beds"))
     caps = set(_load_jsonish(row.get("capabilities"), []))
+    evidence_text = " . ".join(
+        str(value or "")
+        for value in (
+            row.get("summary"),
+            row.get("raw_text"),
+            json.dumps(_load_jsonish(row.get("evidence"), {})),
+        )
+    ).lower()
+    negative_icu_bed_evidence = any(
+        re.search(pattern, evidence_text)
+        for pattern in (
+            r"\b(no|zero|0)\s+(?:icu\s+)?beds?\b",
+            r"\bicu\b.{0,30}\b(no|zero|missing|lack|unknown|not available|not operational|non-operational)\b",
+            r"\b(no|missing|lack|unknown)\b.{0,30}\bicu\b.{0,30}\bbeds?\b",
+        )
+    )
+    positive_icu_bed_evidence = (
+        not negative_icu_bed_evidence
+        and any(
+            re.search(pattern, evidence_text)
+            for pattern in (
+                r"\b(\d{1,3})\s*[- ]?(?:icu|intensive care|critical care)\s*beds?\b",
+                r"\b(?:icu|intensive care|critical care)\b.{0,50}\b(\d{1,3})\s*[- ]?beds?\b",
+                r"\b(\d{1,3})\s*[- ]?beds?\b.{0,50}\b(?:icu|intensive care|critical care)\b",
+            )
+        )
+    )
 
     if trust_bucket == "Contradicted" or n_contradictions > 0:
         inferred.append("claim conflicts with available structured evidence")
-    if "icu" in caps and (beds is None or beds == 0):
+    if "icu" in caps and (beds is None or beds == 0) and not positive_icu_bed_evidence:
         inferred.append("claims ICU but no ICU bed evidence is available")
-    if "icu" in caps and beds is not None and beds <= 10:
+    if "icu" in caps and beds is not None and beds <= 10 and not positive_icu_bed_evidence:
         inferred.append("bed count too low to plausibly include an ICU")
     return inferred
 

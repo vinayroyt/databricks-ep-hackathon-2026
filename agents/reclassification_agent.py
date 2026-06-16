@@ -52,6 +52,36 @@ def _sql_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _extract_icu_beds_from_note(note):
+    """Return a planner-confirmed ICU bed count when the note states one.
+
+    This intentionally only reads explicit ICU/critical-care bed evidence. A
+    note saying "ICU bed data missing" or "no ICU beds" should not clear the UI
+    trust flag.
+    """
+    text = (note or "").lower()
+    if not text:
+        return None
+    negative = (
+        r"\b(no|zero|0)\s+(?:icu\s+)?beds?\b",
+        r"\bicu\b.{0,30}\b(no|zero|missing|lack|unknown|not available|not operational|non-operational)\b",
+        r"\b(no|missing|lack|unknown)\b.{0,30}\bicu\b.{0,30}\bbeds?\b",
+    )
+    if any(re.search(pattern, text) for pattern in negative):
+        return None
+
+    patterns = (
+        r"\b(\d{1,3})\s*[- ]?(?:icu|intensive care|critical care)\s*beds?\b",
+        r"\b(?:icu|intensive care|critical care)\b.{0,50}\b(\d{1,3})\s*[- ]?beds?\b",
+        r"\b(\d{1,3})\s*[- ]?beds?\b.{0,50}\b(?:icu|intensive care|critical care)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return int(match.group(1))
+    return None
+
+
 def _get_facility_annotations(facility_id: str):
     """Planner notes for a real facility_id (bypasses mock_data, which only
     knows about the demo F001-F004 facilities)."""
@@ -102,18 +132,28 @@ def _extract_and_score(name, all_text, num_doctors=None, capacity=None, year_est
     services = scoring.normalize_list(e.get("services"))
     accreditations = scoring.normalize_list(e.get("accreditations"))
     all_caps = sorted(set(capabilities) | set(specialties))
+    note_icu_beds = _extract_icu_beds_from_note(correction_note)
+    scoring_text = " . ".join(v for v in (all_text, correction_note) if v)
+    corrected_capacity = capacity
+    if note_icu_beds is not None and (corrected_capacity is None or corrected_capacity <= 0):
+        corrected_capacity = note_icu_beds
 
     score = scoring.score_facility(
-        name=name, all_text=all_text, claimed_caps=all_caps,
-        num_doctors=num_doctors, capacity=capacity,
+        name=name, all_text=scoring_text, claimed_caps=all_caps,
+        num_doctors=num_doctors, capacity=corrected_capacity,
         year_established=year_established, field_completeness_pct=field_completeness_pct,
     )
-    flags = scoring.compute_flags(all_caps, all_text)
+    flags = scoring.compute_flags(all_caps, scoring_text)
+
+    summary = e.get("summary")
+    if note_icu_beds is not None:
+        note_summary = f"Planner confirmed {note_icu_beds} ICU beds."
+        summary = f"{summary} {note_summary}" if summary else note_summary
 
     refined = {
         "facility_type": (e.get("facility_type") or "unknown").lower(),
         "ownership": (e.get("ownership") or "unknown").lower(),
-        "summary": e.get("summary"),
+        "summary": summary,
         "capabilities": capabilities,
         "specialties": specialties,
         "key_procedures": key_procedures,
@@ -131,6 +171,8 @@ def _extract_and_score(name, all_text, num_doctors=None, capacity=None, year_est
         "teleconsultation": e.get("teleconsultation"),
         **flags,
     }
+    if note_icu_beds is not None and (capacity is None or capacity <= 0):
+        refined["beds"] = note_icu_beds
     return {"extracted": e, "refined": refined, "score": score}
 
 
@@ -279,6 +321,7 @@ def reclassify_facility(facility_id: str, correction_note: str = None):
             "n_contradictions": score["n_contradictions"],
             "capabilities": refined["capabilities"],
             "specialties": refined["specialties"],
+            "beds": refined.get("beds", detail.get("beds")),
         },
         "extraction_summary": result["extracted"].get("summary"),
     }
