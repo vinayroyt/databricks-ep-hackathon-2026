@@ -782,64 +782,38 @@ def render_score_table(scores):
 
 
 ARCHITECTURE_MERMAID = """
-flowchart LR
-  subgraph Sources["Source Data"]
-    A["Raw facilities<br/>free-text claims"]
-    B["India pincode directory<br/>district/state/geocode"]
-    C["NFHS-5 district indicators<br/>demand signals"]
+flowchart TB
+  U["Planner / Field Agent<br/>Browser"] --> APP["Databricks App<br/>Streamlit: VeriCare Map"]
+
+  subgraph DBX["Databricks Workspace"]
+    APP --> SQL["SQL Warehouse"]
+    JOB["Notebook / Lakeflow Job<br/>clean, extract, score"] --> DELTA["Delta Tables<br/>facility_refined<br/>facility_confidence<br/>facility_app"]
+    SQL --> DELTA
+    AGENTS["Agents<br/>annotation + reclassification"] --> SQL
   end
 
-  subgraph Delta["Databricks Delta Pipeline"]
-    D["Cleaning + backfill<br/>normalize state/district/geocode"]
-    E["LLM extraction<br/>capabilities, evidence, fields"]
-    F["Trust scoring<br/>confidence + flags"]
-    G["Silver<br/>facility_refined"]
-    H["Gold<br/>facility_confidence<br/>district_gaps"]
-    I["Serving view<br/>facility_app"]
+  subgraph DATA["Source Data"]
+    RAW["Raw facility records"]
+    PIN["Pincode directory"]
+    NFHS["NFHS demand indicators"]
   end
 
-  subgraph Lakebase["Lakebase UI Cache"]
-    J["cg_facilities"]
-    K["cg_districts"]
-    L["cg_demand_reference"]
-    M["cg_district_capability_scores"]
-    N["public.region_annotations"]
+  subgraph LB["Lakebase Postgres"]
+    UI["UI cache tables<br/>cg_facilities<br/>cg_district_scores"]
+    NOTES["Planner notes<br/>public.region_annotations"]
   end
 
-  subgraph App["VeriCare Map"]
-    O["Map<br/>district gap score"]
-    P["Facility evidence<br/>claims, snippets, trust flags"]
-    Q["Planner action<br/>notes + recheck"]
-    R["Data Fixes<br/>counts + normalization story"]
-  end
-
-  A --> D
-  B --> D
-  C --> H
-  D --> E
-  E --> G
-  G --> F
-  F --> H
-  G --> I
-  H --> I
-  I --> J
-  C --> L
-  J --> K
-  J --> M
-  L --> M
-  J --> O
-  K --> O
-  M --> O
-  J --> P
-  Q --> N
-  N --> E
-  Q --> E
-  E --> G
-  H --> M
-  J --> R
-  K --> R
-  L --> R
-  M --> R
+  RAW --> JOB
+  PIN --> JOB
+  NFHS --> JOB
+  DELTA --> SYNC["sync_lakebase_ui.py<br/>batch sync"]
+  SYNC --> UI
+  APP --> UI
+  APP --> NOTES
+  APP --> AGENTS
+  AGENTS --> NOTES
+  AGENTS --> DELTA
+  AGENTS --> SYNC
 """
 
 
@@ -1309,21 +1283,21 @@ with tab_fixes:
     st.caption("The app reads the cleaned Lakebase cache: cg_facilities, cg_districts, cg_demand_reference, and cg_district_capability_scores.")
 
 with tab_architecture:
-    st.subheader("End-To-End Architecture")
-    st.write("The system separates analytical processing in Databricks from fast planner interaction in Lakebase and Streamlit.")
-    render_mermaid_chart(ARCHITECTURE_MERMAID)
+    st.subheader("Deployment Architecture")
+    st.write("A Databricks App serves the planner UI, Delta tables hold the analytical source of truth, and Lakebase stores the fast UI cache plus planner notes.")
+    render_mermaid_chart(ARCHITECTURE_MERMAID, height=620)
 
     cols = st.columns(4)
-    cols[0].metric("Sources", "3")
-    cols[1].metric("Delta layers", "Silver + Gold")
-    cols[2].metric("Lakebase tables", "5")
-    cols[3].metric("Feedback loop", "Human recheck")
+    cols[0].metric("Frontend", "Databricks App")
+    cols[1].metric("Analytics", "Delta + SQL")
+    cols[2].metric("Serving DB", "Lakebase")
+    cols[3].metric("Automation", "Agents")
 
     st.subheader("Flow Summary")
     st.write(
-        "Raw facility records are cleaned and enriched with pincode geography, then LLM extraction turns text into structured "
-        "capabilities and evidence. Trust scoring writes silver/gold Delta tables, the sync script caches planner-ready rows "
-        "in Lakebase, and the Streamlit app lets users inspect gaps, save notes, and trigger reclassification."
+        "The notebook job builds cleaned and scored Delta tables. The batch sync script copies planner-ready rows into Lakebase. "
+        "The Streamlit app reads Lakebase for fast interaction, writes notes to `public.region_annotations`, and calls the "
+        "reclassification agent when a planner asks to recheck a facility."
     )
 
     with st.expander("Mermaid source", expanded=False):
