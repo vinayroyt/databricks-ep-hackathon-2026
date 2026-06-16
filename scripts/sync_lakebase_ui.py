@@ -137,10 +137,6 @@ def _avg_present(values, default=0.5):
 
 def _trust_flags(row):
     flags = _load_jsonish(row.get("trust_flags"), [])
-    if flags:
-        return flags
-
-    inferred = []
     trust_bucket = row.get("trust_bucket")
     n_contradictions = _as_int(row.get("n_contradictions")) or 0
     beds = _as_int(row.get("beds"))
@@ -173,6 +169,15 @@ def _trust_flags(row):
         )
     )
 
+    if flags and positive_icu_bed_evidence:
+        flags = [
+            flag for flag in flags
+            if not re.search(r"\bicu\b.*\b(no|missing|lack|zero|0)\b.*\bbeds?\b|\bno\b.*\bicu\b.*\bbeds?\b|\bbed count too low\b", str(flag).lower())
+        ]
+    if flags:
+        return flags
+
+    inferred = []
     if trust_bucket == "Contradicted" or n_contradictions > 0:
         inferred.append("claim conflicts with available structured evidence")
     if "icu" in caps and (beds is None or beds == 0) and not positive_icu_bed_evidence:
