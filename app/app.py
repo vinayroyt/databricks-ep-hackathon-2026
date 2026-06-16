@@ -597,7 +597,7 @@ def render_map(scores, selected_district):
         zoom=4.7 if len(map_df) > 20 else 6,
         pitch=0,
     )
-    st.pydeck_chart(
+    event = st.pydeck_chart(
         pdk.Deck(
             map_style=None,
             initial_view_state=view,
@@ -605,6 +605,7 @@ def render_map(scores, selected_district):
                 pdk.Layer(
                     "ScatterplotLayer",
                     data=map_df,
+                    id="district-points",
                     get_position="[longitude, latitude]",
                     get_fill_color="color",
                     get_line_color="line_color",
@@ -621,7 +622,13 @@ def render_map(scores, selected_district):
             },
         ),
         width="stretch",
+        key="district_gap_map",
+        on_select="rerun",
+        selection_mode="single-object",
     )
+    selected_objects = getattr(event, "selection", {}).get("objects", {}) if event else {}
+    clicked = (selected_objects.get("district-points") or [None])[0]
+    return clicked.get("district") if clicked else None
 
 
 def render_score_table(scores):
@@ -946,7 +953,11 @@ with tab_map:
     map_col, table_col = st.columns([1.3, 1])
     with map_col:
         st.subheader("Where To Look")
-        render_map(scores, selected_district)
+        clicked_district = render_map(scores, selected_district)
+        if clicked_district and clicked_district != selected_district:
+            focus_district(clicked_district)
+            st.rerun()
+        st.caption("Click a district on the map or use the district picker.")
     with table_col:
         st.subheader("Start Here")
         render_priority_districts(scores)
