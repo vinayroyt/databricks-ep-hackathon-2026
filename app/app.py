@@ -342,6 +342,8 @@ def load_facilities(district, capability=None, low_trust_only=False, limit=None)
             params["capability"] = capability
             capability_order = "CASE WHEN (capabilities ? %(capability)s OR claimed_capabilities ? %(capability)s) THEN 0 ELSE 1 END"
         if low_trust_only:
+            if capability:
+                conditions.append("(capabilities ? %(capability)s OR claimed_capabilities ? %(capability)s)")
             conditions.append(
                 """
                 (
@@ -1056,7 +1058,9 @@ def render_facility(facility, district, force_open=False):
             st.markdown("<div class='section-label'>Evidence</div>", unsafe_allow_html=True)
             st.markdown(f"<div class='evidence'>{evidence_text}</div>", unsafe_allow_html=True)
 
-        with st.expander("More details", expanded=False):
+        details_key = f"details_{facility['facility_id']}"
+        show_details = st.toggle("More details", value=force_open, key=details_key)
+        if show_details:
             if facility.get("beds") is not None or facility.get("doctors") is not None:
                 st.caption(f"Beds: {facility.get('beds') or 'unknown'} | Doctors: {facility.get('doctors') or 'unknown'}")
             fields = facility.get("extracted_fields") or {}
@@ -1070,7 +1074,13 @@ def render_facility(facility, district, force_open=False):
                     st.markdown(f"<div class='evidence'>{ev}</div>", unsafe_allow_html=True)
 
         recheck_key = f"recheck_result_{facility['facility_id']}"
-        with st.expander("Planner action", expanded=force_open or bool(st.session_state.get(recheck_key))):
+        action_key = f"planner_action_{facility['facility_id']}"
+        show_action = st.toggle(
+            "Planner action",
+            value=force_open or bool(st.session_state.get(recheck_key)),
+            key=action_key,
+        )
+        if show_action:
             st.caption("Save field evidence and recheck in one step. Confirmed ICU bed counts can clear the missing-bed flag; missing-data notes keep it red.")
             render_notes_lazy(district, facility_id=facility["facility_id"], key_suffix=facility["facility_id"])
             render_annotation_form(
@@ -1213,11 +1223,15 @@ with tab_map:
 
     with detail_cols[1]:
         st.subheader("Needs Attention")
-        queue = load_review_queue(selected_capability, selected_state, selected_district)
+        queue_limit = 5
+        queue = load_review_queue(selected_capability, selected_state, selected_district, limit=queue_limit)
         if not queue:
             st.caption("No facilities need attention in this district for the selected capability.")
         else:
-            st.caption(f"{selected_district}: pick one to see the evidence below.")
+            expected_review = int(selected.get("low_trust_facilities") or 0)
+            more_count = max(0, expected_review - len(queue))
+            more_text = f" + {more_count} more" if more_count else ""
+            st.caption(f"{selected_district}: top {len(queue)} selected-care review items{more_text}.")
         for idx, item in enumerate(queue, start=1):
             row_cols = st.columns([0.78, 0.22], vertical_alignment="center")
             with row_cols[0]:
@@ -1251,7 +1265,8 @@ with tab_map:
         facilities = load_facilities(selected_district, selected_capability, low_trust_only=low_trust_only)
         expected_total = int(selected.get("total_facilities") or 0)
         if low_trust_only:
-            st.caption(f"Showing {len(facilities)} facilities needing review in {selected_district}.")
+            expected_review = int(selected.get("low_trust_facilities") or 0)
+            st.caption(f"Showing {len(facilities)} of {expected_review} selected-care facilities needing review in {selected_district}.")
         else:
             st.caption(f"Showing {len(facilities)} of {expected_total} total facilities in {selected_district}. Selected-care claimers are listed first.")
         if not facilities:
