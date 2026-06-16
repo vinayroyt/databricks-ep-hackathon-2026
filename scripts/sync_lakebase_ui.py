@@ -144,6 +144,7 @@ POSITIVE_ICU_BED_PATTERNS = (
     r"\b(\d{1,3})\s*[- ]?(?:icu|intensive care|critical care)\s*beds?\b",
     r"\b(?:icu|intensive care|critical care)\b.{0,50}\b(\d{1,3})\s*[- ]?beds?\b",
     r"\b(\d{1,3})\s*[- ]?beds?\b.{0,50}\b(?:icu|intensive care|critical care)\b",
+    r"\b(?:icu|intensive care|critical care)\s*beds?\b.{0,80}\b(\d{1,3})\s*(?:total\s*)?(?:available|operational|running|functional)\b",
 )
 
 

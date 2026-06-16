@@ -508,6 +508,93 @@ def load_demo_insights(capability, state):
         ]
 
 
+@st.cache_data(ttl=300)
+def load_lakebase_data_counts():
+    try:
+        return pd.DataFrame(_query(
+            f"""
+            SELECT 'Lakebase serving' AS layer, 'cg_facilities' AS table_name, count(*)::text AS rows, 'Facilities loaded into the UI cache' AS note
+            FROM {lakebase_ui.UI_FACILITIES}
+            UNION ALL
+            SELECT 'Lakebase serving', 'cg_districts', count(*)::text, 'District rows used by the map'
+            FROM {lakebase_ui.UI_DISTRICTS}
+            UNION ALL
+            SELECT 'Lakebase serving', 'cg_district_capability_scores', count(*)::text, 'District x capability scores'
+            FROM {lakebase_ui.UI_SCORES}
+            UNION ALL
+            SELECT 'Lakebase serving', 'cg_demand_reference', count(*)::text, 'NFHS demand rows synced to Lakebase'
+            FROM {lakebase_ui.UI_DEMAND}
+            UNION ALL
+            SELECT 'Planner feedback', 'public.region_annotations', count(*)::text, 'Saved planner notes and flags'
+            FROM public.region_annotations
+            UNION ALL
+            SELECT 'Data quality', 'Unknown district facilities', count(*)::text, 'Facilities still missing a district'
+            FROM {lakebase_ui.UI_FACILITIES}
+            WHERE district IS NULL OR trim(district) = '' OR upper(district) = 'UNKNOWN'
+            UNION ALL
+            SELECT 'Data quality', 'Unknown state facilities', count(*)::text, 'Facilities still missing a state'
+            FROM {lakebase_ui.UI_FACILITIES}
+            WHERE state IS NULL OR trim(state) = '' OR upper(state) = 'UNKNOWN'
+            UNION ALL
+            SELECT 'Data quality', 'Missing trust score', count(*)::text, 'Facilities without confidence/trust after sync'
+            FROM {lakebase_ui.UI_FACILITIES}
+            WHERE trust_score IS NULL OR trust_bucket IS NULL
+            UNION ALL
+            SELECT 'Data quality', 'Missing map coordinates', count(*)::text, 'Facilities without latitude or longitude'
+            FROM {lakebase_ui.UI_FACILITIES}
+            WHERE latitude IS NULL OR longitude IS NULL
+            """
+        ))
+    except Exception as exc:
+        return pd.DataFrame([{
+            "layer": "Lakebase serving",
+            "table_name": "Unavailable",
+            "rows": "n/a",
+            "note": str(exc),
+        }])
+
+
+@st.cache_data(ttl=300)
+def load_warehouse_lineage_counts():
+    try:
+        import warehouse
+        _, rows = warehouse.run_sql(
+            """
+            SELECT 'Raw source' AS layer, 'facilities' AS table_name, count(*) AS rows, 'Free-text facility records' AS note
+            FROM databricks_virtue_foundation_dataset_dais_2026.virtue_foundation_dataset.facilities
+            UNION ALL
+            SELECT 'Raw source', 'facilities distinct unique_id', count(DISTINCT unique_id), 'Facility IDs entering the pipeline'
+            FROM databricks_virtue_foundation_dataset_dais_2026.virtue_foundation_dataset.facilities
+            UNION ALL
+            SELECT 'Geographic reference', 'india_post_pincode_directory', count(*), 'Pincode backfill reference'
+            FROM databricks_virtue_foundation_dataset_dais_2026.virtue_foundation_dataset.india_post_pincode_directory
+            UNION ALL
+            SELECT 'Demand reference', 'nfhs_5_district_health_indicators', count(*), 'District demand indicators'
+            FROM databricks_virtue_foundation_dataset_dais_2026.virtue_foundation_dataset.nfhs_5_district_health_indicators
+            UNION ALL
+            SELECT 'Silver', 'workspace.default.facility_refined', count(*), 'Cleaned and extracted facility rows'
+            FROM workspace.default.facility_refined
+            UNION ALL
+            SELECT 'Gold', 'workspace.default.facility_confidence', count(*), 'Scored facility rows'
+            FROM workspace.default.facility_confidence
+            UNION ALL
+            SELECT 'Serving', 'workspace.default.facility_app', count(*), 'Flattened Databricks serving view'
+            FROM workspace.default.facility_app
+            UNION ALL
+            SELECT 'Gold', 'workspace.default.district_gaps', count(*), 'District-level analytical gap table'
+            FROM workspace.default.district_gaps
+            """
+        )
+        return pd.DataFrame(rows)
+    except Exception as exc:
+        return pd.DataFrame([{
+            "layer": "Databricks lineage",
+            "table_name": "Unavailable",
+            "rows": "n/a",
+            "note": str(exc),
+        }])
+
+
 def _normalize_facility(row):
     for key, default in (
         ("capabilities", []),
@@ -1081,6 +1168,15 @@ with tab_fixes:
     st.subheader("Demo Talking Points")
     for insight in load_demo_insights(selected_capability, selected_state):
         st.write(f"- {insight}")
+
+    st.subheader("Data Counts")
+    st.dataframe(load_lakebase_data_counts(), hide_index=True, width="stretch")
+    if "show_warehouse_counts" not in st.session_state:
+        st.session_state.show_warehouse_counts = False
+    if st.button("Load raw to gold counts"):
+        st.session_state.show_warehouse_counts = True
+    if st.session_state.show_warehouse_counts:
+        st.dataframe(load_warehouse_lineage_counts(), hide_index=True, width="stretch")
 
     st.subheader("What We Cleaned")
     st.write("These fixes turn messy source records into planner-ready district and facility evidence.")
