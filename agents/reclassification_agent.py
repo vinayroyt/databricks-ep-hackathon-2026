@@ -53,6 +53,24 @@ def _sql_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _merge_sql(table, key, record):
+    select_expr = []
+    for col, val in record.items():
+        if val == "current_timestamp()":
+            select_expr.append(f"current_timestamp() AS {col}")
+        else:
+            select_expr.append(f"{_sql_literal(val)} AS {col}")
+    update_set = ", ".join(f"{col} = s.{col}" for col in record if col != key)
+    columns = ", ".join(record)
+    values = ", ".join(f"s.{col}" for col in record)
+    return (
+        f"MERGE INTO {table} t USING (SELECT {', '.join(select_expr)}) s "
+        f"ON t.{key} = s.{key} "
+        f"WHEN MATCHED THEN UPDATE SET {update_set} "
+        f"WHEN NOT MATCHED THEN INSERT ({columns}) VALUES ({values})"
+    )
+
+
 _NEGATIVE_ICU_BED_PATTERNS = (
     r"\b(no|zero|0)\s+(?:icu\s+)?beds?\b",
     r"\bicu\b.{0,30}\b(no|zero|missing|lack|unknown|not available|not operational|non-operational)\b",
@@ -307,13 +325,18 @@ def reclassify_facility(facility_id: str, correction_note: str = None):
         {"facility_id": facility_id},
     )
 
-    conf_set = ", ".join(f"{col} = {_sql_literal(val)}" for col, val in score.items())
-    warehouse.run_sql(
-        f"UPDATE {FACILITY_CONFIDENCE} SET {conf_set}, "
-        f"scored_at = current_timestamp(), score_version = 'reclass-v1' "
-        f"WHERE facility_id = :facility_id",
-        {"facility_id": facility_id},
-    )
+    conf_record = {
+        "facility_id": facility_id,
+        "name": detail.get("name"),
+        "state": detail.get("state"),
+        "pincode": detail.get("pincode"),
+        "district": detail.get("district"),
+        **score,
+        "scored_at": "current_timestamp()",
+        "model_endpoint": ENDPOINT_NAME,
+        "score_version": "reclass-v1",
+    }
+    warehouse.run_sql(_merge_sql(FACILITY_CONFIDENCE, "facility_id", conf_record))
 
     return {
         "facility_id": facility_id,
