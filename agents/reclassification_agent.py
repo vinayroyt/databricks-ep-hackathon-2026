@@ -20,6 +20,7 @@ FACILITY_APP = "workspace.default.facility_app"
 FACILITY_REFINED = "workspace.default.facility_refined"
 FACILITY_CONFIDENCE = "workspace.default.facility_confidence"
 BRONZE_TABLE = "databricks_virtue_foundation_dataset_dais_2026.virtue_foundation_dataset.facilities"
+ANNOTATION_TABLE = "public.region_annotations"
 
 _cap_v = ", ".join(scoring.CAP_VOCAB)
 _spec_v = ", ".join(scoring.SPEC_VOCAB)
@@ -100,7 +101,7 @@ def _get_facility_annotations(facility_id: str):
             cur.execute(
                 """
                 SELECT id, author, note, created_at
-                FROM region_annotations
+                FROM public.region_annotations
                 WHERE facility_id = %s AND is_test = false
                 ORDER BY created_at DESC
                 """,

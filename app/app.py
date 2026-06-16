@@ -713,9 +713,10 @@ def render_annotation_form(region_id, facility_id=None, key_suffix="region", all
                     if "error" in recheck_result:
                         st.error(recheck_result["error"])
                     else:
+                        recheck_result["saved_note_id"] = result.get("id")
                         st.session_state[recheck_key or f"recheck_result_{facility_id}"] = recheck_result
                 else:
-                    st.success("Saved.")
+                    st.session_state[f"saved_note_{key_suffix}"] = result
                 st.rerun()
 
 
@@ -778,6 +779,8 @@ def render_recheck_result(result):
     summary = reclassed.get("extraction_summary")
     if summary:
         st.caption(summary)
+    if result.get("saved_note_id"):
+        st.caption(f"Saved note id: {result['saved_note_id']}")
 
 
 def render_facility(facility, district, force_open=False):

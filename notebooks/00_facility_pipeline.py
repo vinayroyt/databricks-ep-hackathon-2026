@@ -202,7 +202,7 @@ try:
         .option("host", "ep-long-heart-d8anwpz5.database.us-east-2.cloud.databricks.com")
         .option("port", "5432")
         .option("database", "databricks_postgres")
-        .option("dbtable", "region_annotations")
+        .option("dbtable", "public.region_annotations")
         .option("user", lb_user)
         .option("password", lb_token)
         .option("sslmode", "require")

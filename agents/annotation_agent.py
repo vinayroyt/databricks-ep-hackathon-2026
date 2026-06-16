@@ -2,7 +2,7 @@
 or facility level.
 
 This is the write-back capability Genie can't do on its own. Annotations are
-stored in the `region_annotations` table in the dbrx-hackathon-2026 Lakebase
+stored in the `public.region_annotations` table in the dbrx-hackathon-2026 Lakebase
 project - the same store the Databricks App backend reads/writes for the
 persistence feature.
 """
@@ -12,6 +12,7 @@ from lakebase import get_connection
 from common import get_client, run_agent
 
 
+ANNOTATION_TABLE = "public.region_annotations"
 FLAG_RECLASS_PRIORITY = {"data_wrong", "incorrect_capability", "missing_capability"}
 
 
@@ -22,7 +23,7 @@ def ensure_annotation_table():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS region_annotations (
+                CREATE TABLE IF NOT EXISTS public.region_annotations (
                     id BIGSERIAL PRIMARY KEY,
                     region_id TEXT NOT NULL,
                     facility_id TEXT,
@@ -33,19 +34,19 @@ def ensure_annotation_table():
                 )
                 """
             )
-            cur.execute("ALTER TABLE region_annotations ADD COLUMN IF NOT EXISTS human_flag TEXT")
+            cur.execute(f"ALTER TABLE {ANNOTATION_TABLE} ADD COLUMN IF NOT EXISTS human_flag TEXT")
             cur.execute(
-                """
-                ALTER TABLE region_annotations
+                f"""
+                ALTER TABLE {ANNOTATION_TABLE}
                 ADD COLUMN IF NOT EXISTS reclassification_priority BOOLEAN NOT NULL DEFAULT FALSE
                 """
             )
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_region_annotations_region ON region_annotations(region_id)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_region_annotations_facility ON region_annotations(facility_id)")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS idx_region_annotations_region ON {ANNOTATION_TABLE}(region_id)")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS idx_region_annotations_facility ON {ANNOTATION_TABLE}(facility_id)")
             cur.execute(
-                """
+                f"""
                 CREATE INDEX IF NOT EXISTS idx_region_annotations_reclass_priority
-                ON region_annotations(reclassification_priority, created_at DESC)
+                ON {ANNOTATION_TABLE}(reclassification_priority, created_at DESC)
                 """
             )
         conn.commit()
@@ -85,7 +86,7 @@ def save_annotation(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO region_annotations (
+                INSERT INTO public.region_annotations (
                     region_id, facility_id, author, note, is_test, human_flag, reclassification_priority
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -135,7 +136,7 @@ def get_annotations(region_id: str = None, facility_id: str = None, include_test
                 f"""
                 SELECT id, region_id, facility_id, author, note, human_flag,
                        reclassification_priority, created_at
-                FROM region_annotations
+                FROM public.region_annotations
                 {where_clause}
                 ORDER BY created_at DESC
                 """,

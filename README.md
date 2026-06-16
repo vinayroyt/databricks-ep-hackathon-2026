@@ -21,7 +21,7 @@ Databricks hackathon prototype for verified healthcare access planning.
    - `cg_facilities`
    - `cg_districts`
    - `cg_district_capability_scores`
-   - `region_annotations`
+   - `public.region_annotations`
 
 3. Optionally backfill missing UI coordinates with a cached trusted API lookup:
 
@@ -39,7 +39,7 @@ Databricks hackathon prototype for verified healthcare access planning.
 
 ## Annotation Path
 
-The Streamlit app does not write annotations directly. It calls `annotation_agent.save_annotation()` / `get_annotations()`, so region notes, facility notes, and human flags all land in `region_annotations`.
+The Streamlit app does not write annotations directly. It calls `annotation_agent.save_annotation()` / `get_annotations()`, so region notes, facility notes, and human flags all land in `public.region_annotations`.
 
 Human flags:
 - `looks_good`
