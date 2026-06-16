@@ -26,12 +26,6 @@ def save_annotation(note: str, region_id: str, facility_id: str = None, author: 
         return {"error": f"unknown region_id {region_id}"}
     region_id = region["region_id"]
 
-    if facility_id:
-        facility = mock_data.get_facility(facility_id)
-        if facility is None:
-            return {"error": f"unknown facility_id {facility_id}"}
-        facility_id = facility["facility_id"]
-
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -70,11 +64,8 @@ def get_annotations(region_id: str = None, facility_id: str = None, include_test
         params.append(region["region_id"])
 
     if facility_id:
-        facility = mock_data.get_facility(facility_id)
-        if facility is None:
-            return {"error": f"unknown facility_id {facility_id}"}
         conditions.append("facility_id = %s")
-        params.append(facility["facility_id"])
+        params.append(facility_id)
 
     if not include_test:
         conditions.append("is_test = false")
