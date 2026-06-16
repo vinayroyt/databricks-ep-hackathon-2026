@@ -259,7 +259,7 @@ def _normalize_facility(row):
     }
 
 
-def fetch_facility_rows(limit=None, facility_id=None):
+def fetch_facility_rows(limit=None, facility_id=None, offset=None):
     columns = _table_columns(FACILITY_APP)
     required = ["facility_id", "name", "district"]
     missing = [c for c in required if c not in columns]
@@ -299,18 +299,41 @@ def fetch_facility_rows(limit=None, facility_id=None):
         conditions.append("f.facility_id = :facility_id")
         params["facility_id"] = facility_id
 
+    order_clause = "ORDER BY f.facility_id"
     limit_clause = f"LIMIT {int(limit)}" if limit else ""
+    offset_clause = f"OFFSET {int(offset)}" if offset else ""
     _, rows = warehouse.run_sql(
         f"""
         SELECT {", ".join(select_list)}
         FROM {FACILITY_APP} f
         {raw_join}
         WHERE {" AND ".join(conditions)}
+        {order_clause}
         {limit_clause}
+        {offset_clause}
         """,
         params,
     )
     return [_normalize_facility(row) for row in rows]
+
+
+def iter_facility_batches(limit=None, batch_size=None):
+    batch_size = int(batch_size or os.getenv("SYNC_BATCH_SIZE", "500"))
+    if limit:
+        rows = fetch_facility_rows(limit=limit)
+        if rows:
+            yield rows
+        return
+
+    offset = 0
+    while True:
+        rows = fetch_facility_rows(limit=batch_size, offset=offset)
+        if not rows:
+            break
+        yield rows
+        offset += len(rows)
+        if len(rows) < batch_size:
+            break
 
 
 def fetch_demand_rows():
@@ -421,22 +444,27 @@ def sync(limit=None):
     annotation_agent.ensure_annotation_table()
     print("Ensuring Lakebase UI tables...", flush=True)
     lakebase_ui.ensure_ui_tables()
-    print("Reading facility_app from SQL Warehouse...", flush=True)
-    rows = fetch_facility_rows(limit=limit)
-    print(f"Fetched {len(rows)} facilities.", flush=True)
-    print("Backfilling district/state from pincode reference...", flush=True)
-    rows = apply_pincode_backfill(rows, fetch_pincode_state_map())
+    print("Loading pincode reference for district/state backfill...", flush=True)
+    pincode_map = fetch_pincode_state_map()
     print("Reading NFHS demand indicators from SQL Warehouse...", flush=True)
     demand_rows = fetch_demand_rows()
     print(f"Fetched {len(demand_rows)} demand rows.", flush=True)
     print("Upserting demand indicators into Lakebase...", flush=True)
     lakebase_ui.upsert_demand(demand_rows)
-    print("Upserting facilities into Lakebase...", flush=True)
-    lakebase_ui.upsert_facilities(rows)
+
+    total = 0
+    print("Reading facility_app from SQL Warehouse in batches...", flush=True)
+    for batch_idx, rows in enumerate(iter_facility_batches(limit=limit), start=1):
+        print(f"Fetched batch {batch_idx}: {len(rows)} facilities.", flush=True)
+        rows = apply_pincode_backfill(rows, pincode_map)
+        print(f"Upserting batch {batch_idx} into Lakebase...", flush=True)
+        lakebase_ui.upsert_facilities(rows)
+        total += len(rows)
+
     print("Refreshing district/capability scores...", flush=True)
     lakebase_ui.refresh_districts_and_scores(CAPABILITIES)
     print("Lakebase UI sync complete.", flush=True)
-    return len(rows)
+    return total
 
 
 def sync_facility(facility_id):
