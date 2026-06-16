@@ -193,6 +193,28 @@ def _query(sql, params=None):
         conn.close()
 
 
+def _log_lakebase_error(context, exc):
+    print(f"[lakebase] {context} failed: {type(exc).__name__}: {exc}", flush=True)
+
+
+@st.cache_data(ttl=60)
+def lakebase_health():
+    try:
+        rows = _query(
+            f"""
+            SELECT
+                current_user AS pg_user,
+                current_database() AS database_name,
+                count(*) AS facilities
+            FROM {lakebase_ui.UI_FACILITIES}
+            """
+        )
+        return {"ok": True, **rows[0]}
+    except Exception as exc:
+        _log_lakebase_error("health check", exc)
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
 def _mock_scores(capability):
     rows = []
     for region in mock_data.get_regions():
@@ -235,7 +257,8 @@ def load_overview():
         rows["source"] = "Lakebase"
         rows["is_live"] = True
         return rows
-    except Exception:
+    except Exception as exc:
+        _log_lakebase_error("load_overview", exc)
         return {
             "facilities": len(mock_data.FACILITIES),
             "districts": len(mock_data.REGIONS),
@@ -244,6 +267,7 @@ def load_overview():
             "updated_at": None,
             "source": "Demo fallback; Lakebase UI tables not synced",
             "is_live": False,
+            "error": f"{type(exc).__name__}: {exc}",
         }
 
 
@@ -261,7 +285,8 @@ def load_states():
         )
         states = [r["state"] for r in rows]
         return states or ["All states"]
-    except Exception:
+    except Exception as exc:
+        _log_lakebase_error("load_states", exc)
         return ["All states", "Karnataka"]
 
 
@@ -301,7 +326,8 @@ def load_scores(capability, state):
         if not df.empty:
             df["demand_score"] = df["demand_score"].fillna(0.5)
         return df
-    except Exception:
+    except Exception as exc:
+        _log_lakebase_error("load_scores", exc)
         scores = _mock_scores(capability)
         return scores if state == "All states" else scores[scores["state"] == state]
 
@@ -1108,6 +1134,13 @@ with st.sidebar:
         include_unknown = st.toggle("Show unknown districts", value=False)
     st.divider()
     st.caption(f"Source: {overview['source']}")
+    health = lakebase_health()
+    if health["ok"]:
+        st.caption(f"Lakebase user: {health.get('pg_user', 'unknown')}")
+        st.caption(f"Lakebase rows: {int(health.get('facilities') or 0):,}")
+    elif not overview["is_live"]:
+        st.error("Lakebase connection failed.")
+        st.caption(health.get("error") or overview.get("error") or "Unknown Lakebase error")
 
 scores = load_scores(selected_capability, selected_state)
 if not include_unknown and not scores.empty:
