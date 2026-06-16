@@ -1,4 +1,4 @@
-databricks-sdk
+databricks-sdk>=0.81.0
 pandas
 psycopg[binary]
 pydeck
