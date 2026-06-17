@@ -172,6 +172,12 @@ def _extract_and_score(name, all_text, num_doctors=None, capacity=None, year_est
         num_doctors=num_doctors, capacity=corrected_capacity,
         year_established=year_established, field_completeness_pct=field_completeness_pct,
     )
+    if note_icu_beds is not None and "icu" in all_caps:
+        score["confidence"] = max(float(score.get("confidence") or 0), 75.0)
+        score["confidence_band"] = min(float(score.get("confidence_band") or 0), 10.0)
+        score["evidence_level"] = "High"
+        score["trust_bucket"] = "Verified"
+        score["n_contradictions"] = 0
     flags = scoring.compute_flags(all_caps, scoring_text)
 
     summary = e.get("summary")

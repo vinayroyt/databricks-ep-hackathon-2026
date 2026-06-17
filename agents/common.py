@@ -5,7 +5,7 @@ from lakebase import get_workspace_client
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-ENDPOINT_NAME = os.getenv("RECLASSIFY_ENDPOINT", "dbrxhack2026")
+ENDPOINT_NAME = os.getenv("RECLASSIFY_ENDPOINT", "databricks-meta-llama-3-3-70b-instruct")
 
 
 def get_client():

@@ -710,7 +710,18 @@ def _gap_snapshot(district, capability):
 
 
 def recheck_facility(facility_id, district, capability, correction_note=None):
-    before_gap = _gap_snapshot(district, capability)
+    try:
+        before_gap = _gap_snapshot(district, capability)
+    except Exception as exc:
+        return {
+            "error": (
+                "Could not connect to Lakebase before recheck. "
+                "For local Streamlit, refresh Databricks CLI auth with "
+                "`databricks auth login --profile dbrx-hackathon-2026`, or run the app from a shell "
+                "with a valid Databricks profile. "
+                f"Details: {type(exc).__name__}: {exc}"
+            )
+        }
     try:
         result = reclassification_agent.reclassify_facility(
             facility_id=facility_id,
