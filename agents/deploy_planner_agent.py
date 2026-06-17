@@ -11,7 +11,7 @@ mlflow.set_tracking_uri("databricks")
 mlflow.set_registry_uri("databricks-uc")
 
 UC_MODEL_NAME = "workspace.default.care_gap_planner_agent"
-SOURCE_ENDPOINT_NAME = "dbrxhack2026"
+SOURCE_ENDPOINT_NAME = os.getenv("RECLASSIFY_ENDPOINT", "dbrxhack2026")
 
 INPUT_EXAMPLE = {
     "input": [{"role": "user", "content": "Why does Bidar have a high care gap score for ICU access?"}]

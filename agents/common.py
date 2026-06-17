@@ -1,10 +1,11 @@
 import json
+import os
 import warnings
 from lakebase import get_workspace_client
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-ENDPOINT_NAME = "dbrxhack2026"
+ENDPOINT_NAME = os.getenv("RECLASSIFY_ENDPOINT", "dbrxhack2026")
 
 
 def get_client():

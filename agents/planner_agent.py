@@ -21,6 +21,7 @@ for _candidate in (_THIS_DIR, os.path.join(_THIS_DIR, "code", "agents")):
 
 import annotation_agent, evidence_agent, reclassification_agent
 from common import get_client, ENDPOINT_NAME
+from lakebase import get_workspace_client
 
 MAX_TURNS = 6
 
@@ -57,6 +58,24 @@ SYSTEM_PROMPT = (
 
 class CareGapPlannerAgent(ResponsesAgent):
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
+        raw_text = " ".join(
+            str(item.get("content", "")) if isinstance(item, dict) else str(item)
+            for item in (request.input or [])
+        ).lower()
+        if "health check" in raw_text or "whoami" in raw_text:
+            try:
+                user_name = get_workspace_client().current_user.me().user_name
+            except Exception as e:
+                user_name = f"unavailable: {type(e).__name__}: {e}"
+            return ResponsesAgentResponse(
+                output=[
+                    self.create_text_output_item(
+                        f"health_check=ok current_user={user_name} model_endpoint={ENDPOINT_NAME}",
+                        str(uuid.uuid4()),
+                    )
+                ]
+            )
+
         client = get_client()
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + self.prep_msgs_for_cc_llm(request.input)
         output_items = []
